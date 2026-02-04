@@ -14,6 +14,8 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { readFile as tauriReadFile, readDir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { check } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 import GDriveFolderBrowser from './components/GDriveFolderBrowser';
 import ScreenshotEditor from './components/ScreenshotEditor';
 
@@ -810,6 +812,10 @@ export default function MangaDiffDetector() {
   const [showFullscreenHint, setShowFullscreenHint] = useState(false); // 全画面ヒント表示
   const [instructionButtonsHidden, setInstructionButtonsHidden] = useState(false); // 指示エディタボタン非表示状態
 
+  // ============== 自動更新 ==============
+  const [updateAvailable, setUpdateAvailable] = useState<{ version: string; notes?: string } | null>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+
   const processingRef = useRef(false);
   const compareModeRef = useRef(compareMode); // モード変更を追跡
   const parallelDragStartRefA = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
@@ -850,6 +856,40 @@ export default function MangaDiffDetector() {
     setViewMode('A'); // ビューモードをリセット
     pdfCache.clear();
   }, [compareMode]);
+
+  // 起動時に更新チェック
+  useEffect(() => {
+    const checkForUpdates = async () => {
+      try {
+        const update = await check();
+        if (update) {
+          setUpdateAvailable({
+            version: update.version,
+            notes: update.body || undefined
+          });
+        }
+      } catch (e) {
+        console.log('Update check failed:', e);
+      }
+    };
+    checkForUpdates();
+  }, []);
+
+  // 更新を実行
+  const handleUpdate = async () => {
+    if (!updateAvailable) return;
+    setIsUpdating(true);
+    try {
+      const update = await check();
+      if (update) {
+        await update.downloadAndInstall();
+        await relaunch();
+      }
+    } catch (e) {
+      console.error('Update failed:', e);
+      setIsUpdating(false);
+    }
+  };
 
   // PDF最適化進捗コールバックの設定
   useEffect(() => {
@@ -3530,6 +3570,42 @@ export default function MangaDiffDetector() {
           </div>
         </div>
       )}
+
+      {/* 更新通知 */}
+      {updateAvailable && (
+        <div className="fixed top-4 right-4 bg-blue-600 rounded-lg p-4 shadow-xl border border-blue-400 z-50 max-w-sm">
+          <div className="flex items-start gap-3">
+            <RefreshCw className="text-white mt-0.5 flex-shrink-0" size={20} />
+            <div className="flex-1">
+              <p className="font-semibold mb-1">新しいバージョンがあります</p>
+              <p className="text-sm text-blue-100 mb-3">v{updateAvailable.version}</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleUpdate}
+                  disabled={isUpdating}
+                  className="px-3 py-1.5 bg-white text-blue-600 rounded font-medium text-sm hover:bg-blue-50 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {isUpdating ? (
+                    <>
+                      <Loader2 className="animate-spin" size={14} />
+                      更新中...
+                    </>
+                  ) : (
+                    '今すぐ更新'
+                  )}
+                </button>
+                <button
+                  onClick={() => setUpdateAvailable(null)}
+                  className="px-3 py-1.5 bg-blue-500 text-white rounded text-sm hover:bg-blue-400"
+                >
+                  後で
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       {!isFullscreen && (
       <div className="h-10 bg-neutral-950 border-b border-neutral-800 flex items-center px-4 gap-4 shrink-0">
