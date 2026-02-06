@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "検版ビューアー",
+  "productName": "KENBAN-viewer",
   "version": "1.2.0",
   "identifier": "com.kenban-viewer.app",
   "build": {
