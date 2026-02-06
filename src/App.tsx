@@ -4,7 +4,7 @@ import {
   FolderOpen, ChevronUp, ChevronDown, HelpCircle,
   Layers, FileDiff, CheckCircle, AlertTriangle, Upload, Loader2,
   Settings, Target, HardDrive, Columns2, Eye, EyeOff, FileText, Link2, Unlink2, Edit3, RefreshCw,
-  PanelLeftClose, PanelLeft, FileImage, Palette, Shuffle, Maximize2, BookOpen, Download, X
+  PanelLeftClose, PanelLeft, FileImage, Palette, Shuffle, Maximize2, BookOpen, Download
 } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 import UTIF from 'utif';
