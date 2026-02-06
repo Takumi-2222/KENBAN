@@ -246,16 +246,16 @@ fn resize_image_to_png(img: &DynamicImage, max_width: u32, max_height: u32) -> R
     let new_w = (orig_w as f64 * scale).round() as u32;
     let new_h = (orig_h as f64 * scale).round() as u32;
 
-    let resized = if scale < 1.0 {
-        img.resize(new_w, new_h, FilterType::Lanczos3)
-    } else {
-        img.clone()
-    };
-
-    // PNGエンコード
+    // PNGエンコード（リサイズが必要な場合のみリサイズ）
     let mut png_data = Cursor::new(Vec::new());
-    resized.write_to(&mut png_data, image::ImageFormat::Png)
-        .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+    if scale < 1.0 {
+        let resized = img.resize(new_w, new_h, FilterType::Triangle);
+        resized.write_to(&mut png_data, image::ImageFormat::Png)
+            .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+    } else {
+        img.write_to(&mut png_data, image::ImageFormat::Png)
+            .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+    }
 
     Ok((png_data.into_inner(), new_w, new_h))
 }
@@ -295,18 +295,16 @@ fn decode_and_resize_image(
     // リサイズ+PNGエンコード
     let (png_data, new_w, new_h) = resize_image_to_png(&img, max_width, max_height)?;
 
-    // キャッシュに保存
-    {
+    // キャッシュに保存し、キャッシュからbase64エンコード（clone回避）
+    let base64_str = {
         let mut cache = state.image_cache.lock().map_err(|e| e.to_string())?;
-        cache.insert(cache_key, CachedImage {
-            data: png_data.clone(),
+        cache.insert(cache_key.clone(), CachedImage {
+            data: png_data,
             width: new_w,
             height: new_h,
         });
-    }
-
-    // Base64エンコードして返す
-    let base64_str = STANDARD.encode(&png_data);
+        STANDARD.encode(&cache.get(&cache_key).unwrap().data)
+    };
     Ok(ImageResult {
         data_url: format!("data:image/png;base64,{}", base64_str),
         width: new_w,
