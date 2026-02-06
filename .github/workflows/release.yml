@@ -35,6 +35,7 @@ jobs:
         run: |
           $key = "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" -replace '\s',''
           echo "TAURI_SIGNING_PRIVATE_KEY=$key" >> $env:GITHUB_ENV
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> $env:GITHUB_ENV
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
