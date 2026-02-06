@@ -31,11 +31,11 @@ jobs:
         run: npm ci
 
       - name: Set signing key
-        shell: pwsh
+        shell: bash
         run: |
-          $key = "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" -replace '\s',''
-          echo "TAURI_SIGNING_PRIVATE_KEY=$key" >> $env:GITHUB_ENV
-          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> $env:GITHUB_ENV
+          key=$(echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" | tr -d '[:space:]')
+          echo "TAURI_SIGNING_PRIVATE_KEY=$key" >> $GITHUB_ENV
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> $GITHUB_ENV
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
