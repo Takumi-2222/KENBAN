@@ -3080,60 +3080,33 @@ export default function MangaDiffDetector() {
     }
   }, []);
 
-  // 全画面切り替え時のズームアニメーション（MojiQ方式）
-  const animateFullscreenZoom = useCallback((entering: boolean) => {
-    const duration = 300; // 300ms
-    const startTime = performance.now();
-    const startScale = entering ? 0.92 : 1.08;
-    const endScale = 1;
+  // 全画面トランジション中フラグ（UI要素をCSSで収縮させる）
+  const [fullscreenTransitioning, setFullscreenTransitioning] = useState(false);
 
-    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-
-    const animate = (currentTime: number) => {
-      const elapsed = currentTime - startTime;
-      const progress = Math.min(elapsed / duration, 1);
-      const easedProgress = easeOutCubic(progress);
-      const currentScale = startScale + (endScale - startScale) * easedProgress;
-
-      // コンテンツエリアにscaleを適用
-      const content = document.querySelector('.fullscreen-zoom-target');
-      if (content) {
-        (content as HTMLElement).style.transform = `scale(${currentScale})`;
-      }
-
-      if (progress < 1) {
-        requestAnimationFrame(animate);
-      } else {
-        // アニメーション完了後にtransformをリセット
-        if (content) {
-          (content as HTMLElement).style.transform = '';
-        }
-      }
-    };
-
-    requestAnimationFrame(animate);
-  }, []);
-
-  // 全画面トグル
+  // 全画面トグル（バー収縮とウィンドウ拡大を同時に行い一つの動きに）
   const toggleFullscreen = useCallback(async () => {
     const window = getCurrentWebviewWindow();
     const current = await window.isFullscreen();
     const goingFullscreen = !current;
 
-    // アニメーション開始
-    animateFullscreenZoom(goingFullscreen);
-
-    // 全画面切り替え実行
-    await window.setFullscreen(goingFullscreen);
-    setIsFullscreen(goingFullscreen);
-
-    // 全画面に入った時にヒントを表示
     if (goingFullscreen) {
+      // バー収縮 + 全画面化を同時に開始 → 一つの滑らかな動き
+      setFullscreenTransitioning(true);
+      window.setFullscreen(true); // awaitしない＝同時進行
+      // CSS transition(300ms)とWindows側の遷移が並行で走る
+      await new Promise(r => setTimeout(r, 350));
+      setIsFullscreen(true);
+      setFullscreenTransitioning(false);
       setShowFullscreenHint(true);
       setTimeout(() => setShowFullscreenHint(false), 3000);
+    } else {
+      // 全画面解除 + バー展開を同時に開始
+      window.setFullscreen(false); // awaitしない
+      setIsFullscreen(false);
+      // CSS transitionでバーが展開される
     }
 
-  }, [animateFullscreenZoom]);
+  }, []);
 
   // 並列ビューの最大ページ数
   const parallelMaxIndex = Math.max(parallelFilesA.length, parallelFilesB.length) - 1;
@@ -3672,8 +3645,7 @@ export default function MangaDiffDetector() {
       )}
 
       {/* Header */}
-      {!isFullscreen && (
-      <div className="h-10 bg-neutral-950 border-b border-neutral-800 flex items-center px-4 gap-4 shrink-0">
+      <div className={`bg-neutral-950 border-b border-neutral-800 flex items-center px-4 gap-4 shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-b-0' : 'h-10 opacity-100'}`}>
         <button
           onClick={() => {
             // 初期画面に戻る
@@ -3703,12 +3675,10 @@ export default function MangaDiffDetector() {
           Ready
         </span>
       </div>
-      )}
 
       <div className="flex-1 flex min-h-0">
         {/* Sidebar */}
-        {!isFullscreen && (
-        <div className={`${sidebarCollapsed ? 'w-10' : 'w-72'} bg-neutral-800 border-r border-neutral-700 flex flex-col shrink-0 transition-all duration-200`}>
+        <div className={`bg-neutral-800 border-r border-neutral-700 flex flex-col shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'w-0 opacity-0 border-r-0' : sidebarCollapsed ? 'w-10 opacity-100' : 'w-72 opacity-100'}`}>
           {/* 折りたたみボタン */}
           <div className={`flex items-center border-b border-neutral-700 ${sidebarCollapsed ? 'justify-center p-2' : 'justify-end px-2 py-1'}`}>
             <button
@@ -4037,13 +4007,11 @@ export default function MangaDiffDetector() {
           </>
           )}
         </div>
-        )}
 
         {/* Main Viewer */}
         {appMode === 'diff-check' ? (
         <div className="flex-1 flex flex-col bg-black relative">
-          {!isFullscreen && (
-          <div className="h-12 bg-neutral-800 border-b border-neutral-700 flex items-center justify-between z-10 shrink-0 px-3">
+          <div className={`bg-neutral-800 border-b border-neutral-700 flex items-center justify-between z-10 shrink-0 px-3 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-b-0' : 'h-12 opacity-100'}`}>
             <div className="flex items-center gap-1.5">
               <div className="bg-neutral-900 rounded flex p-0.5 gap-0.5">
                 <button onClick={() => setViewMode('A')} disabled={!currentPair || currentPair.status !== 'done'} className={`text-xs rounded px-2 py-1 ${viewMode === 'A' ? 'bg-neutral-700 text-white' : 'text-neutral-400 hover:text-white disabled:opacity-30'}`}>{modeLabels.a}</button>
@@ -4219,7 +4187,6 @@ export default function MangaDiffDetector() {
               </button>
             </div>
           </div>
-          )}
 
           <div className={`flex-1 relative overflow-hidden flex items-center justify-center bg-neutral-950 ${isFullscreen ? '' : 'p-4'} transition-colors ${!currentPair && dragOverSide ? 'bg-neutral-900' : ''}`} onDragOver={handleDragOver}>
             {currentPair ? (
@@ -4522,8 +4489,7 @@ export default function MangaDiffDetector() {
             )}
           </div>
 
-          {!isFullscreen && (
-          <div className="h-8 bg-neutral-900 border-t border-neutral-800 flex items-center px-4 text-xs text-neutral-500 justify-between shrink-0">
+          <div className={`bg-neutral-900 border-t border-neutral-800 flex items-center px-4 text-xs text-neutral-500 justify-between shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-t-0' : 'h-8 opacity-100'}`}>
             <div className="flex items-center gap-3">
               <span>#{selectedIndex + 1}</span>
               {currentPair?.nameA && <span>{currentPair.nameA}</span>}
@@ -4541,16 +4507,15 @@ export default function MangaDiffDetector() {
               </span>
             </div>
           </div>
-          )}
         </div>
         ) : (
         /* 並列ビューモードのMain Viewer */
         <div className="flex-1 flex flex-col bg-black relative">
           {/* ヘッダー */}
-          {!isFullscreen && (() => {
+          {(() => {
             const hasPsdInParallel = parallelFilesA.some(f => f.type === 'psd') || parallelFilesB.some(f => f.type === 'psd');
             return (
-          <div className={`h-12 bg-neutral-800 border-b border-neutral-700 flex items-center justify-between z-10 shrink-0 ${hasPsdInParallel ? 'px-3' : 'px-4'}`}>
+          <div className={`bg-neutral-800 border-b border-neutral-700 flex items-center justify-between z-10 shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-b-0' : 'h-12 opacity-100'} ${hasPsdInParallel ? 'px-3' : 'px-4'}`}>
             <div className={`flex items-center flex-nowrap shrink-0 ${hasPsdInParallel ? 'gap-1.5' : 'gap-2'}`}>
               <span className={`text-green-400 flex items-center ${hasPsdInParallel ? 'text-xs gap-1.5' : 'text-sm gap-2'}`}>
                 <Columns2 size={hasPsdInParallel ? 14 : 16} />
@@ -5318,8 +5283,7 @@ export default function MangaDiffDetector() {
           )}
 
           {/* フッター */}
-          {!isFullscreen && (
-          <div className="h-8 bg-neutral-900 border-t border-neutral-800 flex items-center px-4 text-xs text-neutral-500 justify-between shrink-0">
+          <div className={`bg-neutral-900 border-t border-neutral-800 flex items-center px-4 text-xs text-neutral-500 justify-between shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-t-0' : 'h-8 opacity-100'}`}>
             <div className="flex items-center gap-3">
               {parallelIndexA === parallelIndexB ? (
                 <span>#{parallelIndexA + 1}</span>
@@ -5339,7 +5303,6 @@ export default function MangaDiffDetector() {
               </span>
             </div>
           </div>
-          )}
         </div>
         )}
       </div>
