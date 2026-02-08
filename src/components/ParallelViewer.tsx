@@ -194,7 +194,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
           {(() => {
             const hasPsdInParallel = parallelFilesA.some(f => f.type === 'psd') || parallelFilesB.some(f => f.type === 'psd');
             return (
-          <div className={`bg-neutral-800 border-b border-neutral-700 flex items-center justify-between z-10 shrink-0 transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-b-0 overflow-hidden' : 'h-12 opacity-100 overflow-visible'} ${hasPsdInParallel ? 'px-3' : 'px-4'}`}>
+          <div className={`bg-neutral-800/80 backdrop-blur-sm border-b border-white/[0.06] flex items-center justify-between z-10 shrink-0 transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-b-0 overflow-hidden' : 'h-12 opacity-100 overflow-visible'} ${hasPsdInParallel ? 'px-3' : 'px-4'}`}>
             <div className={`flex items-center flex-nowrap shrink-0 ${hasPsdInParallel ? 'gap-1.5' : 'gap-2'}`}>
               <span className={`text-green-400 flex items-center ${hasPsdInParallel ? 'text-xs gap-1.5' : 'text-sm gap-2'}`}>
                 <Columns2 size={hasPsdInParallel ? 14 : 16} />
@@ -223,7 +223,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           setShowPsSelectPopup(!showPsSelectPopup);
                         }
                       }}
-                      className={`flex items-center rounded border transition-colors bg-purple-900/50 border-purple-700 text-purple-300 hover:bg-purple-800/50 ${hasPsdInParallel ? 'gap-1 px-2.5 py-1.5' : 'gap-1.5 px-3 py-1.5'}`}
+                      className={`flex items-center rounded border transition-colors bg-[rgba(164,140,196,0.15)] border-[rgba(164,140,196,0.2)] text-purple-400 hover:bg-[rgba(164,140,196,0.2)] ${hasPsdInParallel ? 'gap-1 px-2.5 py-1.5' : 'gap-1.5 px-3 py-1.5'}`}
                       title="Photoshopで開く (P)"
                     >
                       <Layers size={hasPsdInParallel ? 12 : 14} />
@@ -234,14 +234,14 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                     {showPsSelectPopup && (
                       <>
                         <div className="fixed inset-0 z-40" onClick={() => setShowPsSelectPopup(false)} />
-                        <div className="absolute top-full right-0 mt-2 p-2 bg-neutral-800 rounded-lg shadow-xl border border-neutral-600 z-50 min-w-48">
+                        <div className="absolute top-full right-0 mt-2 p-2 bg-neutral-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] z-50 min-w-48">
                           <button
                             onClick={() => {
                               if (currentFileA?.path) invoke('open_file_with_default_app', { path: currentFileA.path });
                               setShowPsSelectPopup(false);
                             }}
                             disabled={!hasPsdA}
-                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-neutral-700 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
+                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-white/[0.03] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
                           >
                             <span className="text-blue-400 shrink-0">A側</span>
                             <span className="text-neutral-400 truncate">{currentFileA?.name || '-'}</span>
@@ -252,7 +252,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                               setShowPsSelectPopup(false);
                             }}
                             disabled={!hasPsdB}
-                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-neutral-700 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
+                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-white/[0.03] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
                           >
                             <span className="text-green-400 shrink-0">B側</span>
                             <span className="text-neutral-400 truncate">{currentFileB?.name || '-'}</span>
@@ -287,7 +287,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           setShowMojiQSelectPopup(!showMojiQSelectPopup);
                         }
                       }}
-                      className={`flex items-center rounded border transition-colors bg-rose-900/50 border-rose-700 text-rose-300 hover:bg-rose-800/50 ${hasPsdInParallel ? 'gap-1 px-2.5 py-1.5' : 'gap-1.5 px-3 py-1.5'}`}
+                      className={`flex items-center rounded border transition-colors bg-[rgba(196,140,156,0.15)] border-[rgba(196,140,156,0.2)] text-rose-400 hover:bg-[rgba(196,140,156,0.2)] ${hasPsdInParallel ? 'gap-1 px-2.5 py-1.5' : 'gap-1.5 px-3 py-1.5'}`}
                       title="MojiQで開く (Q)"
                     >
                       <FileText size={hasPsdInParallel ? 12 : 14} />
@@ -298,7 +298,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                     {showMojiQSelectPopup && (
                       <>
                         <div className="fixed inset-0 z-40" onClick={() => setShowMojiQSelectPopup(false)} />
-                        <div className="absolute top-full right-0 mt-2 p-2 bg-neutral-800 rounded-lg shadow-xl border border-neutral-600 z-50 min-w-48">
+                        <div className="absolute top-full right-0 mt-2 p-2 bg-neutral-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] z-50 min-w-48">
                           <button
                             onClick={() => {
                               if (currentFileA?.type === 'pdf') {
@@ -308,7 +308,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                               setShowMojiQSelectPopup(false);
                             }}
                             disabled={!hasPdfA}
-                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-neutral-700 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
+                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-white/[0.03] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
                           >
                             <span className="text-blue-400 shrink-0">A側</span>
                             <span className="text-neutral-400 truncate">{currentFileA?.name || '-'}</span>
@@ -322,7 +322,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                               setShowMojiQSelectPopup(false);
                             }}
                             disabled={!hasPdfB}
-                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-neutral-700 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
+                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-white/[0.03] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
                           >
                             <span className="text-green-400 shrink-0">B側</span>
                             <span className="text-neutral-400 truncate">{currentFileB?.name || '-'}</span>
@@ -352,7 +352,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           setShowFolderSelectPopup(!showFolderSelectPopup);
                         }
                       }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded border transition-colors bg-amber-900/50 border-amber-700 text-amber-300 hover:bg-amber-800/50"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded border transition-colors bg-[rgba(196,164,124,0.15)] border-[rgba(196,164,124,0.2)] text-orange-400 hover:bg-[rgba(196,164,124,0.2)]"
                       title="フォルダを開く"
                     >
                       <FolderOpen size={14} />
@@ -363,14 +363,14 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                     {showFolderSelectPopup && (
                       <>
                         <div className="fixed inset-0 z-40" onClick={() => setShowFolderSelectPopup(false)} />
-                        <div className="absolute top-full right-0 mt-2 p-2 bg-neutral-800 rounded-lg shadow-xl border border-neutral-600 z-50 min-w-48">
+                        <div className="absolute top-full right-0 mt-2 p-2 bg-neutral-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] z-50 min-w-48">
                           <button
                             onClick={() => {
                               openFolderInExplorer(folderPathA!);
                               setShowFolderSelectPopup(false);
                             }}
                             disabled={!folderPathA}
-                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-neutral-700 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
+                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-white/[0.03] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
                           >
                             <span className="text-blue-400 shrink-0">A側</span>
                             <span className="text-neutral-400 truncate">{parallelFolderA?.split(/[/\\]/).pop() || '-'}</span>
@@ -381,7 +381,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                               setShowFolderSelectPopup(false);
                             }}
                             disabled={!folderPathB}
-                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-neutral-700 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
+                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-white/[0.03] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
                           >
                             <span className="text-green-400 shrink-0">B側</span>
                             <span className="text-neutral-400 truncate">{parallelFolderB?.split(/[/\\]/).pop() || '-'}</span>
@@ -395,7 +395,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
               {/* 同期/非同期切り替え */}
               {(parallelFilesA.length > 0 || parallelFilesB.length > 0) && (
                 <div className="relative flex items-center">
-                  <div className="flex rounded overflow-hidden border border-neutral-600">
+                  <div className="flex rounded-lg overflow-hidden bg-neutral-950 p-0.5 gap-0.5">
                     {/* 同期ボタン */}
                     <button
                       onClick={() => {
@@ -403,10 +403,10 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           setShowSyncOptions(true);
                         }
                       }}
-                      className={`px-3 py-1.5 text-xs flex items-center gap-1 transition ${
+                      className={`px-3 py-1.5 text-xs flex items-center gap-1 rounded transition ${
                         parallelSyncMode
-                          ? 'bg-blue-900/50 text-blue-300'
-                          : 'bg-neutral-700 text-neutral-500 hover:bg-neutral-600'
+                          ? 'bg-neutral-700 text-neutral-100 shadow-sm'
+                          : 'text-neutral-500 hover:text-neutral-400'
                       }`}
                       title="同期モード"
                     >
@@ -421,10 +421,10 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           setShowSyncOptions(false);
                         }
                       }}
-                      className={`px-3 py-1.5 text-xs flex items-center gap-1 transition ${
+                      className={`px-3 py-1.5 text-xs flex items-center gap-1 rounded transition ${
                         !parallelSyncMode
-                          ? 'bg-orange-900/50 text-orange-300'
-                          : 'bg-neutral-700 text-neutral-500 hover:bg-neutral-600'
+                          ? 'bg-neutral-700 text-neutral-100 shadow-sm'
+                          : 'text-neutral-500 hover:text-neutral-400'
                       }`}
                       title="非同期モード"
                     >
@@ -436,13 +436,13 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                     <>
                       <div className="fixed inset-0 z-40" onClick={() => setShowSyncOptions(false)} />
                       <div className="absolute top-full left-0 mt-1 z-50">
-                        <div className="p-1 bg-neutral-800 rounded-lg shadow-xl border border-neutral-600 whitespace-nowrap flex flex-col gap-1">
+                        <div className="p-1 bg-neutral-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] whitespace-nowrap flex flex-col gap-1">
                         <button
                           onClick={() => {
                             setParallelSyncMode(true);
                             setShowSyncOptions(false);
                           }}
-                          className="px-3 py-1.5 text-xs bg-blue-900/50 hover:bg-blue-800/50 border border-blue-700 text-blue-300 rounded transition"
+                          className="px-3 py-1.5 text-xs bg-[rgba(124,156,196,0.12)] hover:bg-[rgba(124,156,196,0.18)] border border-[rgba(124,156,196,0.2)] text-blue-400 rounded transition"
                         >
                           このまま再同期
                         </button>
@@ -454,7 +454,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                             setParallelSyncMode(true);
                             setShowSyncOptions(false);
                           }}
-                          className="px-3 py-1.5 text-xs bg-green-900/50 hover:bg-green-800/50 border border-green-700 text-green-300 rounded transition"
+                          className="px-3 py-1.5 text-xs bg-[rgba(124,184,140,0.12)] hover:bg-[rgba(124,184,140,0.18)] border border-[rgba(124,184,140,0.2)] text-green-400 rounded transition"
                         >
                           ページを合わせて再同期
                         </button>
@@ -469,7 +469,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                 <button
                   onClick={refreshParallelView}
                   disabled={parallelLoading}
-                  className={`flex items-center rounded border transition-colors bg-teal-900/50 border-teal-700 text-teal-300 hover:bg-teal-800/50 disabled:opacity-30 ${hasPsdInParallel ? 'gap-1 px-2.5 py-1.5' : 'gap-1.5 px-3 py-1.5'}`}
+                  className={`flex items-center rounded border transition-colors bg-[rgba(124,184,140,0.12)] border-[rgba(124,184,140,0.2)] text-green-400 hover:bg-[rgba(124,184,140,0.18)] disabled:opacity-30 ${hasPsdInParallel ? 'gap-1 px-2.5 py-1.5' : 'gap-1.5 px-3 py-1.5'}`}
                   title="ファイルを再読み込み (F5)"
                 >
                   <RefreshCw size={hasPsdInParallel ? 12 : 14} />
@@ -479,7 +479,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
               {/* 全画面ボタン */}
               <button
                 onClick={toggleFullscreen}
-                className={`flex items-center rounded border transition-colors bg-neutral-700 border-neutral-600 text-neutral-300 hover:bg-neutral-600 ${hasPsdInParallel ? 'gap-1 px-2.5 py-1.5' : 'gap-1.5 px-3 py-1.5'}`}
+                className={`flex items-center rounded border transition-colors bg-neutral-700 border-white/[0.06] text-neutral-300 hover:bg-neutral-600 ${hasPsdInParallel ? 'gap-1 px-2.5 py-1.5' : 'gap-1.5 px-3 py-1.5'}`}
                 title="全画面表示 (F11)"
               >
                 <Maximize2 size={hasPsdInParallel ? 12 : 14} />
@@ -488,19 +488,19 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
               {/* ショートカットヒント（クリックで詳細表示） */}
               <button
                 onClick={() => setShowHelp(!showHelp)}
-                className="flex items-center gap-2 text-[11px] px-2 py-1 bg-neutral-900 rounded border border-neutral-700 hover:bg-neutral-700 transition-colors"
+                className="flex items-center gap-2 text-[11px] px-2 py-1 bg-neutral-900 rounded border border-white/[0.04] hover:bg-white/[0.03] transition-colors"
                 title="クリックで詳細表示"
               >
                 <span className="flex items-center gap-1">
-                  <kbd className="px-1 py-0.5 bg-neutral-700 rounded text-neutral-200 font-mono text-[10px] border border-neutral-500">↑↓</kbd>
+                  <kbd className="px-1 py-0.5 bg-white/[0.06] rounded text-neutral-500 font-mono text-[10px] border border-white/[0.08]">↑↓</kbd>
                   <span className="text-neutral-300">移動</span>
                 </span>
                 <span className="flex items-center gap-1">
-                  <kbd className="px-1 py-0.5 bg-neutral-700 rounded text-neutral-200 font-mono text-[10px] border border-neutral-500">S</kbd>
+                  <kbd className="px-1 py-0.5 bg-white/[0.06] rounded text-neutral-500 font-mono text-[10px] border border-white/[0.08]">S</kbd>
                   <span className="text-neutral-300">同期</span>
                 </span>
                 <span className="flex items-center gap-1">
-                  <kbd className="px-1 py-0.5 bg-neutral-700 rounded text-neutral-200 font-mono text-[10px] border border-neutral-500">C</kbd>
+                  <kbd className="px-1 py-0.5 bg-white/[0.06] rounded text-neutral-500 font-mono text-[10px] border border-white/[0.08]">C</kbd>
                   <span className="text-neutral-300">指示</span>
                 </span>
                 <HelpCircle size={11} className="text-neutral-400" />
@@ -515,14 +515,14 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
             {/* 左パネル (フォルダ/PDFA) */}
             <div
               ref={parallelDropZoneARef}
-              className={`flex-1 flex flex-col border-r border-neutral-700 ${dragOverSide === 'parallelA' ? 'ring-2 ring-blue-500 ring-inset bg-blue-900/20' : ''} ${!parallelSyncMode && parallelActivePanel === 'A' ? 'ring-2 ring-blue-400 ring-inset' : ''}`}
+              className={`flex-1 flex flex-col border-r border-white/[0.04] ${dragOverSide === 'parallelA' ? 'ring-2 ring-blue-500 ring-inset bg-blue-900/20' : ''} ${!parallelSyncMode && parallelActivePanel === 'A' ? 'ring-2 ring-blue-400 ring-inset' : ''}`}
               onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverSide('parallelA'); }}
               onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverSide(null); }}
               onDrop={(e) => { handleParallelDrop(e, 'A'); setDragOverSide(null); }}
               onClick={() => !parallelSyncMode && setParallelActivePanel('A')}
             >
               {!isFullscreen && (
-              <div className={`h-10 border-b border-neutral-700 flex items-center px-3 text-xs ${!parallelSyncMode && parallelActivePanel === 'A' ? 'bg-blue-900/30 text-blue-300' : 'bg-neutral-900 text-blue-400'}`}>
+              <div className={`h-10 border-b border-white/[0.06] flex items-center px-3 text-xs ${!parallelSyncMode && parallelActivePanel === 'A' ? 'bg-[rgba(124,156,196,0.08)] text-blue-400' : 'bg-neutral-900 text-blue-400'}`}>
                 {parallelFilesA[0]?.type === 'pdf' ? <FileText size={12} className="mr-2" /> : <FolderOpen size={12} className="mr-2" />}
                 <span className="truncate max-w-32">{parallelFolderA ? parallelFolderA.split(/[/\\]/).pop() : 'A'}</span>
                 {/* 単ページ化ボタン（PDF時のみ） */}
@@ -545,13 +545,13 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                       単ページ化
                     </button>
                     <div className="hidden group-hover:block absolute top-full left-0 pt-1 z-50">
-                      <div className="p-2 bg-neutral-800 rounded-lg shadow-xl border border-neutral-600 whitespace-nowrap">
+                      <div className="p-2 bg-neutral-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] whitespace-nowrap">
                         <label className="flex items-center gap-2 cursor-pointer text-sm text-neutral-300 hover:text-white" onClick={(e) => e.stopPropagation()}>
                           <input
                             type="checkbox"
                             checked={firstPageSingleA}
                             onChange={(e) => setFirstPageSingleA(e.target.checked)}
-                            className="w-4 h-4 rounded border-neutral-500 bg-neutral-700"
+                            className="w-4 h-4 rounded border-white/[0.08] bg-neutral-800"
                           />
                           1P単独
                         </label>
@@ -564,13 +564,13 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                     <button
                       onClick={(e) => { e.stopPropagation(); setParallelActivePanel('A'); setParallelIndexA(prev => Math.max(prev - 1, 0)); }}
                       disabled={parallelIndexA <= 0}
-                      className="px-1 hover:bg-neutral-700 rounded disabled:opacity-30"
+                      className="px-1 hover:bg-white/[0.03] rounded disabled:opacity-30"
                     >▲</button>
                     <span className="px-1 text-neutral-400">{parallelIndexA + 1}/{parallelFilesA.length}</span>
                     <button
                       onClick={(e) => { e.stopPropagation(); setParallelActivePanel('A'); setParallelIndexA(prev => Math.min(prev + 1, parallelFilesA.length - 1)); }}
                       disabled={parallelIndexA >= parallelFilesA.length - 1}
-                      className="px-1 hover:bg-neutral-700 rounded disabled:opacity-30"
+                      className="px-1 hover:bg-white/[0.03] rounded disabled:opacity-30"
                     >▼</button>
                   </div>
                 )}
@@ -707,7 +707,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                       <div className="flex gap-2 justify-center">
                         <button
                           onClick={() => handleSelectParallelFolder('A')}
-                          className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs transition"
+                          className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700/50 rounded text-xs transition"
                         >
                           フォルダ選択
                         </button>
@@ -734,7 +734,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
               onClick={() => !parallelSyncMode && setParallelActivePanel('B')}
             >
               {!isFullscreen && (
-              <div className={`h-10 border-b border-neutral-700 flex items-center px-3 text-xs ${!parallelSyncMode && parallelActivePanel === 'B' ? 'bg-green-900/30 text-green-300' : 'bg-neutral-900 text-green-400'}`}>
+              <div className={`h-10 border-b border-white/[0.06] flex items-center px-3 text-xs ${!parallelSyncMode && parallelActivePanel === 'B' ? 'bg-[rgba(124,184,140,0.08)] text-green-400' : 'bg-neutral-900 text-green-400'}`}>
                 {parallelFilesB[0]?.type === 'pdf' ? <FileText size={12} className="mr-2" /> : <FolderOpen size={12} className="mr-2" />}
                 <span className="truncate max-w-32">{parallelFolderB ? parallelFolderB.split(/[/\\]/).pop() : 'B'}</span>
                 {/* 単ページ化ボタン（PDF時のみ） */}
@@ -757,13 +757,13 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                       単ページ化
                     </button>
                     <div className="hidden group-hover:block absolute top-full left-0 pt-1 z-50">
-                      <div className="p-2 bg-neutral-800 rounded-lg shadow-xl border border-neutral-600 whitespace-nowrap">
+                      <div className="p-2 bg-neutral-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] whitespace-nowrap">
                         <label className="flex items-center gap-2 cursor-pointer text-sm text-neutral-300 hover:text-white" onClick={(e) => e.stopPropagation()}>
                           <input
                             type="checkbox"
                             checked={firstPageSingleB}
                             onChange={(e) => setFirstPageSingleB(e.target.checked)}
-                            className="w-4 h-4 rounded border-neutral-500 bg-neutral-700"
+                            className="w-4 h-4 rounded border-white/[0.08] bg-neutral-800"
                           />
                           1P単独
                         </label>
@@ -776,13 +776,13 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                     <button
                       onClick={(e) => { e.stopPropagation(); setParallelActivePanel('B'); setParallelIndexB(prev => Math.max(prev - 1, 0)); }}
                       disabled={parallelIndexB <= 0}
-                      className="px-1 hover:bg-neutral-700 rounded disabled:opacity-30"
+                      className="px-1 hover:bg-white/[0.03] rounded disabled:opacity-30"
                     >▲</button>
                     <span className="px-1 text-neutral-400">{parallelIndexB + 1}/{parallelFilesB.length}</span>
                     <button
                       onClick={(e) => { e.stopPropagation(); setParallelActivePanel('B'); setParallelIndexB(prev => Math.min(prev + 1, parallelFilesB.length - 1)); }}
                       disabled={parallelIndexB >= parallelFilesB.length - 1}
-                      className="px-1 hover:bg-neutral-700 rounded disabled:opacity-30"
+                      className="px-1 hover:bg-white/[0.03] rounded disabled:opacity-30"
                     >▼</button>
                   </div>
                 )}
@@ -919,7 +919,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                       <div className="flex gap-2 justify-center">
                         <button
                           onClick={() => handleSelectParallelFolder('B')}
-                          className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs transition"
+                          className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700/50 rounded text-xs transition"
                         >
                           フォルダ選択
                         </button>
@@ -941,7 +941,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
           {!isFullscreen && showHelp && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setShowHelp(false)} />
-              <div className="absolute top-16 right-4 z-50 bg-neutral-900/95 backdrop-blur border border-neutral-700 rounded-lg shadow-2xl p-4 text-sm min-w-64">
+              <div className="absolute top-16 right-4 z-50 bg-neutral-800/95 backdrop-blur-md border border-white/[0.10] rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 text-sm min-w-64">
                 <div className="text-neutral-200 font-bold mb-3 flex items-center gap-2">
                   <HelpCircle size={16} /> 並列ビュー操作方法
                 </div>
@@ -962,7 +962,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
           )}
 
           {/* フッター */}
-          <div className={`bg-neutral-900 border-t border-neutral-800 flex items-center px-4 text-xs text-neutral-500 justify-between shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-t-0' : 'h-8 opacity-100'}`}>
+          <div className={`bg-neutral-900 border-t border-white/[0.06] flex items-center px-4 text-xs text-neutral-500 justify-between shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-t-0' : 'h-8 opacity-100'}`}>
             <div className="flex items-center gap-3">
               {parallelIndexA === parallelIndexB ? (
                 <span>#{parallelIndexA + 1}</span>
@@ -977,7 +977,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
               )}
             </div>
             <div className="flex items-center gap-3">
-              <span className="px-2 py-0.5 rounded bg-green-900/50 text-green-300">
+              <span className="px-2 py-0.5 rounded bg-[rgba(124,184,140,0.08)] text-green-400">
                 並列ビュー
               </span>
             </div>

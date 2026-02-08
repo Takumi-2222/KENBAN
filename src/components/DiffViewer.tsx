@@ -169,13 +169,15 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
 
   return (
         <div className="flex-1 flex flex-col bg-black relative">
-          <div className={`bg-neutral-800 border-b border-neutral-700 flex items-center justify-between z-10 shrink-0 px-3 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-b-0' : 'h-12 opacity-100'}`}>
+          {/* Toolbar */}
+          <div className={`bg-neutral-800/80 backdrop-blur-sm border-b border-white/[0.06] flex items-center justify-between z-10 shrink-0 px-3 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-b-0' : 'h-11 opacity-100'}`}>
             <div className="flex items-center gap-1.5">
-              <div className="bg-neutral-900 rounded flex p-0.5 gap-0.5">
-                <button onClick={() => setViewMode('A')} disabled={!currentPair || currentPair.status !== 'done'} className={`text-xs rounded px-2 py-1 ${viewMode === 'A' ? 'bg-neutral-700 text-white' : 'text-neutral-400 hover:text-white disabled:opacity-30'}`}>{modeLabels.a}</button>
-                {compareMode === 'psd-tiff' && <button onClick={() => setViewMode('A-full')} disabled={!currentPair || currentPair.status !== 'done'} className={`px-2 py-1 text-xs rounded ${viewMode === 'A-full' ? 'bg-neutral-700 text-white' : 'text-neutral-400 hover:text-white disabled:opacity-30'}`}>全体</button>}
-                <button onClick={() => setViewMode('B')} disabled={!currentPair || currentPair.status !== 'done'} className={`text-xs rounded px-2 py-1 ${viewMode === 'B' ? 'bg-neutral-700 text-white' : 'text-neutral-400 hover:text-white disabled:opacity-30'}`}>{modeLabels.b}</button>
-                <button onClick={() => setViewMode('diff')} disabled={!currentPair || currentPair.status !== 'done'} className={`text-xs rounded flex items-center gap-1 px-2 py-1 ${viewMode === 'diff' ? 'bg-red-900/50 text-red-100' : 'text-neutral-400 hover:text-white disabled:opacity-30'}`}><FileDiff size={12} />差分</button>
+              {/* Segmented view mode control */}
+              <div className="bg-neutral-950 rounded-lg flex p-0.5 gap-0.5">
+                <button onClick={() => setViewMode('A')} disabled={!currentPair || currentPair.status !== 'done'} className={`text-xs rounded-md px-2 py-1 transition-all ${viewMode === 'A' ? 'bg-neutral-700 text-neutral-100 shadow-sm' : 'text-neutral-500 hover:text-neutral-200 disabled:opacity-30'}`}>{modeLabels.a}</button>
+                {compareMode === 'psd-tiff' && <button onClick={() => setViewMode('A-full')} disabled={!currentPair || currentPair.status !== 'done'} className={`px-2 py-1 text-xs rounded-md transition-all ${viewMode === 'A-full' ? 'bg-neutral-700 text-neutral-100 shadow-sm' : 'text-neutral-500 hover:text-neutral-200 disabled:opacity-30'}`}>全体</button>}
+                <button onClick={() => setViewMode('B')} disabled={!currentPair || currentPair.status !== 'done'} className={`text-xs rounded-md px-2 py-1 transition-all ${viewMode === 'B' ? 'bg-neutral-700 text-neutral-100 shadow-sm' : 'text-neutral-500 hover:text-neutral-200 disabled:opacity-30'}`}>{modeLabels.b}</button>
+                <button onClick={() => setViewMode('diff')} disabled={!currentPair || currentPair.status !== 'done'} className={`text-xs rounded-md flex items-center gap-1 px-2 py-1 transition-all ${viewMode === 'diff' ? 'bg-red-900/40 text-red-300 shadow-sm' : 'text-neutral-500 hover:text-neutral-200 disabled:opacity-30'}`}><FileDiff size={12} />差分</button>
               </div>
               {(compareMode === 'psd-psd' || compareMode === 'psd-tiff') && (
                 <button
@@ -188,10 +190,10 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                     if (psdFile?.filePath) invoke('open_file_with_default_app', { path: psdFile.filePath });
                   }}
                   disabled={!currentPair || currentPair.status !== 'done' || viewMode === 'diff' || (viewMode === 'B' && compareMode === 'psd-tiff')}
-                  className="px-2.5 py-1.5 text-xs rounded bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1"
+                  className="px-2.5 py-1.5 text-xs rounded-md bg-[rgba(164,140,196,0.15)] hover:bg-[rgba(164,140,196,0.25)] text-purple-400 border border-[rgba(164,140,196,0.2)] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 transition-colors"
                   title="Photoshopで開く"
                 >
-                  <Layers size={12} />Photoshop<span className="opacity-60 text-[11px]">[P]</span>
+                  <Layers size={12} />Photoshop<span className="opacity-50 text-[11px]">[P]</span>
                 </button>
               )}
               {compareMode === 'pdf-pdf' && (
@@ -206,10 +208,10 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                     }
                   }}
                   disabled={!currentPair || currentPair.status !== 'done'}
-                  className="px-2.5 py-1.5 text-xs rounded bg-rose-600 hover:bg-rose-500 text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1"
+                  className="px-2.5 py-1.5 text-xs rounded-md bg-[rgba(196,140,156,0.15)] hover:bg-[rgba(196,140,156,0.25)] text-rose-400 border border-[rgba(196,140,156,0.2)] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 transition-colors"
                   title="MojiQで開く (Q)"
                 >
-                  <FileText size={12} />MojiQ<span className="opacity-60 text-[11px]">[Q]</span>
+                  <FileText size={12} />MojiQ<span className="opacity-50 text-[11px]">[Q]</span>
                 </button>
               )}
               <button
@@ -228,19 +230,19 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                   if (displayImg) setCapturedImage(displayImg);
                 }}
                 disabled={!currentPair || currentPair.status !== 'done'}
-                className="text-xs rounded bg-yellow-600 hover:bg-yellow-500 text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 px-2.5 py-1.5"
+                className="text-xs rounded-md bg-neutral-700 hover:bg-neutral-600 text-neutral-300 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 px-2.5 py-1.5 transition-colors"
                 title="指示"
               >
-                指示<span className="opacity-60 text-[11px]">[C]</span>
+                指示<span className="opacity-50 text-[11px]">[C]</span>
               </button>
               {compareMode !== 'pdf-pdf' && (
                 <button
                   onClick={refreshDiffMode}
                   disabled={!currentPair || currentPair.status === 'loading'}
-                  className="text-xs rounded bg-teal-600 hover:bg-teal-500 text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 px-2.5 py-1.5"
+                  className="text-xs rounded-md bg-neutral-700 hover:bg-neutral-600 text-neutral-300 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 px-2.5 py-1.5 transition-colors"
                   title="ファイルを再読み込み (F5)"
                 >
-                  <RefreshCw size={12} />更新<span className="opacity-60 text-[11px]">[F5]</span>
+                  <RefreshCw size={12} />更新<span className="opacity-50 text-[11px]">[F5]</span>
                 </button>
               )}
               {/* フォルダを開くボタン（差分モード） */}
@@ -259,7 +261,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                           setShowFolderSelectPopup(!showFolderSelectPopup);
                         }
                       }}
-                      className="text-xs rounded flex items-center gap-1 px-2.5 py-1.5 bg-amber-900/50 border border-amber-700 text-amber-300 hover:bg-amber-800/50"
+                      className="text-xs rounded-md flex items-center gap-1 px-2.5 py-1.5 bg-neutral-700 hover:bg-neutral-600 text-neutral-300 transition-colors"
                       title="フォルダを開く"
                     >
                       <FolderOpen size={12} />フォルダ
@@ -268,17 +270,17 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                     {showFolderSelectPopup && (
                       <>
                         <div className="fixed inset-0 z-40" onClick={() => setShowFolderSelectPopup(false)} />
-                        <div className="absolute top-full left-0 mt-2 p-2 bg-neutral-800 rounded-lg shadow-xl border border-neutral-600 z-50 min-w-48">
+                        <div className="absolute top-full left-0 mt-2 p-2 bg-neutral-800 rounded-lg shadow-[0_4px_16px_rgba(0,0,0,0.4)] border border-white/[0.10] z-50 min-w-48">
                           <button
                             onClick={() => {
                               openFolderInExplorer(folderPathA!);
                               setShowFolderSelectPopup(false);
                             }}
                             disabled={!folderPathA}
-                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-neutral-700 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
+                            className="w-full text-left px-3 py-2 rounded-md text-sm hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
                           >
                             <span className="text-blue-400 shrink-0">A側</span>
-                            <span className="text-neutral-400 truncate">{(filesA[0] as FileWithPath)?.filePath?.split(/[/\\]/).slice(-2, -1)[0] || '-'}</span>
+                            <span className="text-neutral-500 truncate">{(filesA[0] as FileWithPath)?.filePath?.split(/[/\\]/).slice(-2, -1)[0] || '-'}</span>
                           </button>
                           <button
                             onClick={() => {
@@ -286,10 +288,10 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                               setShowFolderSelectPopup(false);
                             }}
                             disabled={!folderPathB}
-                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-neutral-700 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
+                            className="w-full text-left px-3 py-2 rounded-md text-sm hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
                           >
                             <span className="text-green-400 shrink-0">B側</span>
-                            <span className="text-neutral-400 truncate">{(filesB[0] as FileWithPath)?.filePath?.split(/[/\\]/).slice(-2, -1)[0] || '-'}</span>
+                            <span className="text-neutral-500 truncate">{(filesB[0] as FileWithPath)?.filePath?.split(/[/\\]/).slice(-2, -1)[0] || '-'}</span>
                           </button>
                         </div>
                       </>
@@ -299,73 +301,74 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
               })()}
               <button
                 onClick={toggleFullscreen}
-                className="text-xs rounded bg-neutral-700 hover:bg-neutral-600 text-white flex items-center gap-1 px-2.5 py-1.5"
+                className="text-xs rounded-md bg-neutral-700 hover:bg-neutral-600 text-neutral-300 flex items-center gap-1 px-2.5 py-1.5 transition-colors"
                 title="全画面表示 (F11)"
               >
-                <Maximize2 size={12} /><span className="opacity-60 text-[11px]">[F11]</span>
+                <Maximize2 size={12} /><span className="opacity-50 text-[11px]">[F11]</span>
               </button>
             </div>
 
-            <div className="flex items-center text-xs text-neutral-400 gap-1.5">
+            <div className="flex items-center text-xs text-neutral-500 gap-1.5">
               {compareMode === 'pdf-pdf' && currentPair?.status === 'done' && currentPair.totalPages > 1 && (
-                <div className="flex items-center gap-1 px-2 py-1 bg-neutral-900 rounded border border-neutral-700">
-                  <button onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} disabled={currentPage <= 1} tabIndex={-1} className="px-2 py-1 rounded hover:bg-neutral-700 disabled:opacity-30">◀</button>
-                  <span className="px-2 min-w-[80px] text-center">{isLoadingPage ? <Loader2 size={12} className="inline animate-spin" /> : <>{currentPage} / {currentPair.totalPages}</>}</span>
-                  <button onClick={() => setCurrentPage(prev => Math.min(prev + 1, currentPair.totalPages))} disabled={currentPage >= currentPair.totalPages} tabIndex={-1} className="px-2 py-1 rounded hover:bg-neutral-700 disabled:opacity-30">▶</button>
+                <div className="flex items-center gap-1 px-2 py-1 bg-neutral-950 rounded-lg border border-white/[0.06]">
+                  <button onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} disabled={currentPage <= 1} tabIndex={-1} className="px-2 py-1 rounded-md hover:bg-white/[0.06] disabled:opacity-30 transition-colors">◀</button>
+                  <span className="px-2 min-w-[80px] text-center text-neutral-300">{isLoadingPage ? <Loader2 size={12} className="inline animate-spin" /> : <>{currentPage} / {currentPair.totalPages}</>}</span>
+                  <button onClick={() => setCurrentPage(prev => Math.min(prev + 1, currentPair.totalPages))} disabled={currentPage >= currentPair.totalPages} tabIndex={-1} className="px-2 py-1 rounded-md hover:bg-white/[0.06] disabled:opacity-30 transition-colors">▶</button>
                   {preloadProgress.total > 0 && preloadProgress.loaded < preloadProgress.total && (
-                    <span className="ml-2 text-neutral-500 text-xs">
+                    <span className="ml-2 text-neutral-600 text-xs">
                       先読み {Math.round((preloadProgress.loaded / preloadProgress.total) * 100)}%
                     </span>
                   )}
                 </div>
               )}
-              {/* ショートカットヒント */}
+              {/* Shortcut hints */}
               <button
                 onClick={() => setShowHelp(!showHelp)}
-                className="flex items-center gap-2 text-[11px] px-2 py-1 bg-neutral-900 rounded border border-neutral-700 hover:bg-neutral-700 transition-colors"
+                className="flex items-center gap-2 text-[11px] px-2 py-1 bg-neutral-950 rounded-lg border border-white/[0.06] hover:bg-neutral-900 transition-colors"
                 title="クリックで詳細表示"
               >
                 <span className="flex items-center gap-1">
-                  <kbd className="px-1 py-0.5 bg-neutral-700 rounded text-neutral-200 font-mono text-[10px] border border-neutral-500">Space</kbd>
-                  <span className="text-neutral-300">A/B</span>
+                  <kbd className="px-1.5 py-0.5 bg-white/[0.06] rounded text-neutral-500 font-mono text-[10px] border border-white/[0.08]">Space</kbd>
+                  <span className="text-neutral-400">A/B</span>
                 </span>
                 <span className="flex items-center gap-1">
-                  <kbd className="px-1 py-0.5 bg-neutral-700 rounded text-neutral-200 font-mono text-[10px] border border-neutral-500">Ctrl+Space</kbd>
-                  <span className="text-neutral-300">差分</span>
+                  <kbd className="px-1.5 py-0.5 bg-white/[0.06] rounded text-neutral-500 font-mono text-[10px] border border-white/[0.08]">Ctrl+Space</kbd>
+                  <span className="text-neutral-400">差分</span>
                 </span>
                 <span className="flex items-center gap-1">
-                  <kbd className="px-1 py-0.5 bg-neutral-700 rounded text-neutral-200 font-mono text-[10px] border border-neutral-500">↑↓</kbd>
-                  <span className="text-neutral-300">{compareMode === 'pdf-pdf' ? 'ページ' : '選択'}</span>
+                  <kbd className="px-1.5 py-0.5 bg-white/[0.06] rounded text-neutral-500 font-mono text-[10px] border border-white/[0.08]">↑↓</kbd>
+                  <span className="text-neutral-400">{compareMode === 'pdf-pdf' ? 'ページ' : '選択'}</span>
                 </span>
                 <span className="flex items-center gap-1">
-                  <kbd className="px-1 py-0.5 bg-neutral-700 rounded text-neutral-200 font-mono text-[10px] border border-neutral-500">C</kbd>
-                  <span className="text-neutral-300">指示</span>
+                  <kbd className="px-1.5 py-0.5 bg-white/[0.06] rounded text-neutral-500 font-mono text-[10px] border border-white/[0.08]">C</kbd>
+                  <span className="text-neutral-400">指示</span>
                 </span>
-                <HelpCircle size={11} className="text-neutral-400" />
+                <HelpCircle size={11} className="text-neutral-600" />
               </button>
             </div>
           </div>
 
+          {/* Main viewer area */}
           <div className={`flex-1 relative overflow-hidden flex items-center justify-center bg-neutral-950 ${isFullscreen ? '' : 'p-4'} transition-colors ${!currentPair && dragOverSide ? 'bg-neutral-900' : ''}`} onDragOver={handleDragOver}>
             {currentPair ? (
               currentPair.status === 'loading' ? (
-                <div className="flex flex-col items-center text-blue-400"><Loader2 size={48} className="animate-spin mb-4" /><p>解析中...</p></div>
+                <div className="flex flex-col items-center text-action"><Loader2 size={48} className="animate-spin mb-4" /><p>解析中...</p></div>
               ) : currentPair.status === 'error' ? (
-                <div className="text-red-400 text-center"><p>読み込みに失敗しました</p><p className="text-xs text-neutral-500 mt-2">{currentPair.errorMessage}</p></div>
+                <div className="text-red-400 text-center"><p>読み込みに失敗しました</p><p className="text-xs text-neutral-600 mt-2">{currentPair.errorMessage}</p></div>
               ) : currentPair.status === 'pending' ? (
                 <div className="flex flex-col items-center w-full max-w-3xl">
                   {currentPair.fileA && currentPair.fileB && (compareMode !== 'psd-tiff' || cropBounds) ? (
-                    <><Loader2 size={48} className="animate-spin mb-4 opacity-50 text-blue-400" /><p className="text-neutral-500">順番待ち...</p></>
+                    <><Loader2 size={48} className="animate-spin mb-4 opacity-50 text-action" /><p className="text-neutral-600">順番待ち...</p></>
                   ) : (
                     <>
-                      <Upload size={48} className="mb-4 opacity-20 text-neutral-500" />
-                      <p className="text-neutral-500 mb-6">{compareMode === 'psd-tiff' ? '3つのファイルをドロップしてください' : 'ファイルをドロップしてください'}</p>
+                      <Upload size={48} className="mb-4 opacity-20 text-neutral-600" />
+                      <p className="text-neutral-600 mb-6">{compareMode === 'psd-tiff' ? '3つのファイルをドロップしてください' : 'ファイルをドロップしてください'}</p>
 
                       <div className="flex gap-4 w-full">
                         {compareMode === 'psd-tiff' && (
                           <div
                             ref={dropZoneJsonRef}
-                            className={`flex-1 border-2 border-dashed rounded-2xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${dragOverSide === 'json' ? 'border-orange-500 bg-orange-900/30' : cropBounds ? 'border-green-600 bg-green-900/20' : 'border-neutral-700 hover:border-neutral-500 hover:bg-neutral-900/50'}`}
+                            className={`flex-1 border border-dashed rounded-xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${dragOverSide === 'json' ? 'border-orange-400/50 bg-orange-900/15' : cropBounds ? 'border-green-500/40 bg-green-900/10' : 'border-white/[0.08] hover:border-white/[0.15] hover:bg-white/[0.02]'}`}
                             onDragOver={handleDragOver}
                             onDragEnter={handleDragEnter('json')}
                             onDragLeave={handleDragLeave}
@@ -373,34 +376,34 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                             onClick={() => setIsGDriveBrowserOpen(true)}
                           >
                             <HardDrive size={36} className={`mb-3 ${dragOverSide === 'json' ? 'text-orange-400' : cropBounds ? 'text-green-400' : 'text-neutral-600'}`} />
-                            <p className={`text-sm font-medium ${dragOverSide === 'json' ? 'text-orange-300' : cropBounds ? 'text-green-300' : 'text-neutral-400'}`}>Gドライブ</p>
+                            <p className={`text-sm font-medium ${dragOverSide === 'json' ? 'text-orange-300' : cropBounds ? 'text-green-400' : 'text-neutral-500'}`}>Gドライブ</p>
                             <p className="text-xs text-neutral-600 mt-1">.json</p>
                             {cropBounds && <p className="text-xs text-green-400 mt-2">OK</p>}
                           </div>
                         )}
 
-                        <div ref={dropZoneARef} className={`flex-1 border-2 border-dashed rounded-2xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${dragOverSide === 'A' ? 'border-blue-500 bg-blue-900/30' : filesA.length > 0 ? 'border-green-600 bg-green-900/20' : 'border-neutral-700 hover:border-neutral-500 hover:bg-neutral-900/50'}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('A')} onDragLeave={handleDragLeave} onDrop={handleDrop('A')} onClick={handleFilesAUpload}>
-                          <FolderOpen size={36} className={`mb-3 ${dragOverSide === 'A' ? 'text-blue-400' : filesA.length > 0 ? 'text-green-400' : 'text-neutral-600'}`} />
-                          <p className={`text-sm font-medium ${dragOverSide === 'A' ? 'text-blue-300' : filesA.length > 0 ? 'text-green-300' : 'text-neutral-400'}`}>{modeLabels.a}</p>
-                          <p className="text-xs text-neutral-600 mt-1">{getAcceptedExtensions('A', compareMode).join(', ')}</p>
-                          {filesA.length > 0 && <p className="text-xs text-green-400 mt-2">{filesA.length}件</p>}
-                        </div>
+                        <div ref={dropZoneARef} className={`flex-1 border border-dashed rounded-xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${dragOverSide === 'A' ? 'border-blue-400/50 bg-blue-900/15' : filesA.length > 0 ? 'border-green-500/40 bg-green-900/10' : 'border-white/[0.08] hover:border-white/[0.15] hover:bg-white/[0.02]'}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('A')} onDragLeave={handleDragLeave} onDrop={handleDrop('A')} onClick={handleFilesAUpload}>
+                              <FolderOpen size={36} className={`mb-3 ${dragOverSide === 'A' ? 'text-blue-400' : filesA.length > 0 ? 'text-green-400' : 'text-neutral-600'}`} />
+                              <p className={`text-sm font-medium ${dragOverSide === 'A' ? 'text-blue-400' : filesA.length > 0 ? 'text-green-400' : 'text-neutral-500'}`}>{modeLabels.a}</p>
+                              <p className="text-xs text-neutral-600 mt-1">{getAcceptedExtensions('A', compareMode).join(', ')}</p>
+                              {filesA.length > 0 && <p className="text-xs text-green-400 mt-2">{filesA.length}件</p>}
+                            </div>
 
-                        <div ref={dropZoneBRef} className={`flex-1 border-2 border-dashed rounded-2xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${dragOverSide === 'B' ? 'border-green-500 bg-green-900/30' : filesB.length > 0 ? 'border-green-600 bg-green-900/20' : 'border-neutral-700 hover:border-neutral-500 hover:bg-neutral-900/50'}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('B')} onDragLeave={handleDragLeave} onDrop={handleDrop('B')} onClick={handleFilesBUpload}>
-                          <FolderOpen size={36} className={`mb-3 ${dragOverSide === 'B' ? 'text-green-400' : filesB.length > 0 ? 'text-green-400' : 'text-neutral-600'}`} />
-                          <p className={`text-sm font-medium ${dragOverSide === 'B' ? 'text-green-300' : filesB.length > 0 ? 'text-green-300' : 'text-neutral-400'}`}>{modeLabels.b}</p>
-                          <p className="text-xs text-neutral-600 mt-1">{getAcceptedExtensions('B', compareMode).join(', ')}</p>
-                          {filesB.length > 0 && <p className="text-xs text-green-400 mt-2">{filesB.length}件</p>}
-                        </div>
+                        <div ref={dropZoneBRef} className={`flex-1 border border-dashed rounded-xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${dragOverSide === 'B' ? 'border-green-400/50 bg-green-900/15' : filesB.length > 0 ? 'border-green-500/40 bg-green-900/10' : 'border-white/[0.08] hover:border-white/[0.15] hover:bg-white/[0.02]'}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('B')} onDragLeave={handleDragLeave} onDrop={handleDrop('B')} onClick={handleFilesBUpload}>
+                              <FolderOpen size={36} className={`mb-3 ${dragOverSide === 'B' ? 'text-green-400' : filesB.length > 0 ? 'text-green-400' : 'text-neutral-600'}`} />
+                              <p className={`text-sm font-medium ${dragOverSide === 'B' ? 'text-green-400' : filesB.length > 0 ? 'text-green-400' : 'text-neutral-500'}`}>{modeLabels.b}</p>
+                              <p className="text-xs text-neutral-600 mt-1">{getAcceptedExtensions('B', compareMode).join(', ')}</p>
+                              {filesB.length > 0 && <p className="text-xs text-green-400 mt-2">{filesB.length}件</p>}
+                            </div>
                       </div>
 
                       {compareMode === 'psd-tiff' && (
                         <div className="mt-4 flex gap-2 text-xs">
-                          <span className={cropBounds ? 'text-green-400' : 'text-neutral-500'}>1. JSON {cropBounds ? 'OK' : '...'}</span>
-                          <span className="text-neutral-600">→</span>
-                          <span className={filesA.length > 0 ? 'text-green-400' : 'text-neutral-500'}>2. PSD {filesA.length > 0 ? 'OK' : '...'}</span>
-                          <span className="text-neutral-600">→</span>
-                          <span className={filesB.length > 0 ? 'text-green-400' : 'text-neutral-500'}>3. TIFF {filesB.length > 0 ? 'OK' : '...'}</span>
+                          <span className={cropBounds ? 'text-green-400' : 'text-neutral-600'}>1. JSON {cropBounds ? 'OK' : '...'}</span>
+                          <span className="text-neutral-700">→</span>
+                          <span className={filesA.length > 0 ? 'text-green-400' : 'text-neutral-600'}>2. PSD {filesA.length > 0 ? 'OK' : '...'}</span>
+                          <span className="text-neutral-700">→</span>
+                          <span className={filesB.length > 0 ? 'text-green-400' : 'text-neutral-600'}>3. TIFF {filesB.length > 0 ? 'OK' : '...'}</span>
                         </div>
                       )}
                     </>
@@ -419,7 +422,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                     onDoubleClick={handleImageDoubleClick}
                     style={{ cursor: zoom > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default' }}
                   >
-                    {/* PDF表示: Canvas直接レンダリング（MojiQと同様） */}
+                    {/* PDF: Canvas direct rendering */}
                     {compareMode === 'pdf-pdf' && viewMode !== 'diff' ? (
                       <canvas
                         ref={pdfCanvasRef}
@@ -441,12 +444,12 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                         draggable={false}
                       />
                     ) : (
-                      <div className="flex flex-col items-center text-neutral-500"><Loader2 size={32} className="animate-spin mb-2 opacity-50" /><p>読み込み中...</p></div>
+                      <div className="flex flex-col items-center text-neutral-600"><Loader2 size={32} className="animate-spin mb-2 opacity-50" /><p>読み込み中...</p></div>
                     )}
                   </div>
 
                   {!isFullscreen && zoom !== 1 && (
-                    <div className="absolute bottom-4 left-4 bg-black/70 text-white px-2 py-1 rounded text-sm">
+                    <div className="absolute bottom-4 left-4 bg-black/70 text-neutral-300 px-2 py-1 rounded-md text-sm">
                       {Math.round(zoom * 100)}% (Ctrl+0でリセット)
                     </div>
                   )}
@@ -454,7 +457,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                   {!isFullscreen && (
                   <div className="absolute top-4 right-4 flex flex-col items-end gap-2 z-50">
                     <div className="flex items-center gap-2">
-                      <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-lg text-sm border pointer-events-none ${viewMode === 'diff' ? 'bg-red-900/80 border-red-600 text-red-100' : viewMode === 'B' ? 'bg-green-900/80 border-green-600 text-green-100' : 'bg-blue-900/80 border-blue-600 text-blue-100'}`}>
+                      <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-lg text-sm border pointer-events-none ${viewMode === 'diff' ? 'bg-red-900/60 border-red-500/30 text-red-300' : viewMode === 'B' ? 'bg-green-900/60 border-green-500/30 text-green-300' : 'bg-blue-900/60 border-blue-500/30 text-blue-300'}`}>
                         {viewMode === 'diff' ? <><FileDiff size={14} /> 差分</> : viewMode === 'B' ? <>{modeLabels.b}</> : viewMode === 'A-full' ? <>PSD全体</> : <>{modeLabels.a}</>}
                       </div>
                     </div>
@@ -462,24 +465,24 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                     {showHelp && (
                       <>
                         <div className="fixed inset-0 z-40" onClick={() => setShowHelp(false)} />
-                        <div className="relative z-50 bg-neutral-900/95 backdrop-blur border border-neutral-700 rounded-lg shadow-2xl p-4 text-sm min-w-64">
-                          <div className="text-neutral-200 font-bold mb-3 flex items-center gap-2">
+                        <div className="relative z-50 bg-neutral-800/95 backdrop-blur-md border border-white/[0.10] rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 text-sm min-w-64">
+                          <div className="text-neutral-200 font-semibold mb-3 flex items-center gap-2">
                             <HelpCircle size={16} /> 操作方法
                           </div>
                           <div className="space-y-1.5 text-neutral-300">
-                            <div className="flex justify-between"><span className="text-neutral-500">Space</span><span>A/B 切り替え</span></div>
-                            <div className="flex justify-between"><span className="text-neutral-500">Ctrl+Space</span><span>差分表示トグル</span></div>
-                            <div className="flex justify-between"><span className="text-neutral-500">↑ / ↓</span><span>{compareMode === 'pdf-pdf' ? 'ページ移動' : 'ファイル選択'}</span></div>
-                            {(compareMode === 'psd-psd' || compareMode === 'psd-tiff') && <div className="flex justify-between"><span className="text-neutral-500">P</span><span>Photoshopで開く</span></div>}
-                            {compareMode === 'pdf-pdf' && <div className="flex justify-between"><span className="text-neutral-500">Q</span><span>MojiQで開く</span></div>}
-                            <div className="flex justify-between"><span className="text-neutral-500">C</span><span>スクリーンショット</span></div>
-                            <div className="border-t border-neutral-700 my-2" />
-                            <div className="flex justify-between"><span className="text-neutral-500">Ctrl+-/+</span><span>ズーム</span></div>
-                            <div className="flex justify-between"><span className="text-neutral-500">Ctrl+0</span><span>全体表示に戻す</span></div>
-                            {viewMode === 'diff' && <div className="flex justify-between"><span className="text-neutral-500">ホイール</span><span>ページ切替</span></div>}
-                            <div className="flex justify-between"><span className="text-neutral-500">ドラッグ</span><span>パン移動（拡大時）</span></div>
-                            <div className="border-t border-neutral-700 my-2" />
-                            <div className="text-neutral-400 text-xs">
+                            <div className="flex justify-between"><span className="text-neutral-600">Space</span><span>A/B 切り替え</span></div>
+                            <div className="flex justify-between"><span className="text-neutral-600">Ctrl+Space</span><span>差分表示トグル</span></div>
+                            <div className="flex justify-between"><span className="text-neutral-600">↑ / ↓</span><span>{compareMode === 'pdf-pdf' ? 'ページ移動' : 'ファイル選択'}</span></div>
+                            {(compareMode === 'psd-psd' || compareMode === 'psd-tiff') && <div className="flex justify-between"><span className="text-neutral-600">P</span><span>Photoshopで開く</span></div>}
+                            {compareMode === 'pdf-pdf' && <div className="flex justify-between"><span className="text-neutral-600">Q</span><span>MojiQで開く</span></div>}
+                            <div className="flex justify-between"><span className="text-neutral-600">C</span><span>スクリーンショット</span></div>
+                            <div className="border-t border-white/[0.06] my-2" />
+                            <div className="flex justify-between"><span className="text-neutral-600">Ctrl+-/+</span><span>ズーム</span></div>
+                            <div className="flex justify-between"><span className="text-neutral-600">Ctrl+0</span><span>全体表示に戻す</span></div>
+                            {viewMode === 'diff' && <div className="flex justify-between"><span className="text-neutral-600">ホイール</span><span>ページ切替</span></div>}
+                            <div className="flex justify-between"><span className="text-neutral-600">ドラッグ</span><span>パン移動（拡大時）</span></div>
+                            <div className="border-t border-white/[0.06] my-2" />
+                            <div className="text-neutral-500 text-xs">
                               <div className="font-medium text-neutral-300 mb-1">スクリーンショット (C)</div>
                               <div>1. Cキーで選択モード開始</div>
                               <div>2. ドラッグで範囲選択</div>
@@ -491,16 +494,16 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                       </>
                     )}
 
-                    {compareMode === 'psd-tiff' && currentPair.hasDiff && <div className="bg-orange-600/90 text-white px-3 py-1.5 rounded-lg shadow-lg text-sm font-bold pointer-events-none">差分可能性: {currentPair.diffProbability}%</div>}
-                    {currentPair.hasDiff && currentMarkers.length > 0 && <div className="bg-cyan-600/90 text-white px-3 py-1.5 rounded-lg shadow-lg text-sm font-bold flex items-center gap-1 pointer-events-none"><Target size={14} /> {currentMarkers.length}箇所</div>}
+                    {compareMode === 'psd-tiff' && currentPair.hasDiff && <div className="bg-orange-900/70 text-orange-300 px-3 py-1.5 rounded-lg shadow-lg text-sm font-semibold pointer-events-none border border-orange-500/20">差分可能性: {currentPair.diffProbability}%</div>}
+                    {currentPair.hasDiff && currentMarkers.length > 0 && <div className="bg-cyan-900/70 text-cyan-300 px-3 py-1.5 rounded-lg shadow-lg text-sm font-semibold flex items-center gap-1 pointer-events-none border border-cyan-500/20"><Target size={14} /> {currentMarkers.length}箇所</div>}
                   </div>
                   )}
 
                   {!isFullscreen && compareMode === 'psd-tiff' && viewMode === 'diff' && (
-                    <div className="absolute bottom-4 right-4 bg-neutral-900/90 backdrop-blur p-3 rounded-lg shadow-lg text-xs pointer-events-none">
+                    <div className="absolute bottom-4 right-4 bg-neutral-800/90 backdrop-blur-md border border-white/[0.08] p-3 rounded-lg shadow-lg text-xs pointer-events-none">
                       <div className="text-neutral-300 mb-2 font-medium">差分密度</div>
                       <div className="flex items-center gap-2"><div className="w-24 h-3 rounded" style={{ background: 'linear-gradient(to right, rgb(0,0,200), rgb(0,200,200), rgb(255,255,0), rgb(255,0,0))' }} /></div>
-                      <div className="flex justify-between text-neutral-500 mt-1"><span>低</span><span>高</span></div>
+                      <div className="flex justify-between text-neutral-600 mt-1"><span>低</span><span>高</span></div>
                     </div>
                   )}
                 </>
@@ -509,76 +512,76 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
               <>
               {initialModeSelect ? (
                 <div className="flex flex-col items-center w-full max-w-2xl">
-                  <p className="text-white text-2xl font-bold mb-8">モードを選択</p>
+                  <p className="text-neutral-100 text-2xl font-semibold mb-8 tracking-wide">モードを選択</p>
 
-                  {/* メインモード選択タブ */}
+                  {/* Main mode tabs */}
                   <div className="flex gap-4 mb-8 w-full">
                     <button
                       onClick={() => {/* 差分モードはデフォルトで選択済み */}}
-                      className="flex-1 border-2 border-cyan-500 bg-cyan-950/50 rounded-xl py-4 px-6 flex items-center justify-center gap-3 transition-all"
+                      className="flex-1 border border-action/30 bg-[rgba(107,138,255,0.06)] rounded-xl py-4 px-6 flex items-center justify-center gap-3 transition-all"
                     >
-                      <FileDiff size={24} className="text-cyan-300" />
-                      <span className="text-lg font-bold text-cyan-200">差分モード</span>
+                      <FileDiff size={24} className="text-action" />
+                      <span className="text-lg font-semibold text-action">差分モード</span>
                     </button>
                     <button
                       onClick={() => setAppMode('parallel-view')}
-                      className="flex-1 border-2 border-neutral-600 bg-neutral-800/50 rounded-xl py-4 px-6 flex items-center justify-center gap-3 transition-all cursor-pointer hover:border-teal-500 hover:bg-teal-950/30 group"
+                      className="flex-1 border border-white/[0.06] bg-white/[0.02] rounded-xl py-4 px-6 flex items-center justify-center gap-3 transition-all cursor-pointer hover:border-green-400/30 hover:bg-[rgba(124,184,140,0.06)] group"
                     >
-                      <PanelLeftClose size={24} className="text-neutral-400 group-hover:text-teal-300 transition-colors" />
-                      <span className="text-lg font-bold text-neutral-400 group-hover:text-teal-200 transition-colors">分割ビューワー</span>
+                      <PanelLeftClose size={24} className="text-neutral-500 group-hover:text-green-400 transition-colors" />
+                      <span className="text-lg font-semibold text-neutral-500 group-hover:text-green-400 transition-colors">分割ビューワー</span>
                     </button>
                   </div>
 
-                  {/* 差分モードのサブ選択 */}
-                  <p className="text-neutral-500 text-sm mb-4">比較するファイル形式を選んでください</p>
+                  {/* Diff mode sub-selection */}
+                  <p className="text-neutral-600 text-sm mb-4 tracking-wide">比較するファイル形式を選んでください</p>
                   <div className="grid grid-cols-2 gap-4 w-full">
                     <button
                       onClick={() => handleModeChange('tiff-tiff')}
-                      className="border-2 border-blue-600/50 bg-blue-950/30 rounded-xl p-6 flex flex-col items-center justify-center transition-all cursor-pointer hover:border-blue-400 hover:bg-blue-900/50 hover:scale-105 group"
+                      className="border border-white/[0.06] bg-white/[0.02] rounded-xl p-6 flex flex-col items-center justify-center transition-all cursor-pointer hover:border-[rgba(124,156,196,0.3)] hover:bg-[rgba(124,156,196,0.06)] hover:scale-[1.02] group"
                     >
                       <FileImage size={40} className="mb-2 text-blue-400 group-hover:text-blue-300 transition-colors" />
-                      <p className="text-lg font-bold text-blue-300 group-hover:text-blue-200 transition-colors">TIFF</p>
-                      <p className="text-xs text-blue-400/70 mt-1">TIFF同士の比較</p>
+                      <p className="text-lg font-semibold text-blue-400 group-hover:text-blue-300 transition-colors">TIFF</p>
+                      <p className="text-xs text-neutral-600 mt-1">TIFF同士の比較</p>
                     </button>
 
                     <button
                       onClick={() => handleModeChange('psd-psd')}
-                      className="border-2 border-purple-600/50 bg-purple-950/30 rounded-xl p-6 flex flex-col items-center justify-center transition-all cursor-pointer hover:border-purple-400 hover:bg-purple-900/50 hover:scale-105 group"
+                      className="border border-white/[0.06] bg-white/[0.02] rounded-xl p-6 flex flex-col items-center justify-center transition-all cursor-pointer hover:border-[rgba(164,140,196,0.3)] hover:bg-[rgba(164,140,196,0.06)] hover:scale-[1.02] group"
                     >
                       <Palette size={40} className="mb-2 text-purple-400 group-hover:text-purple-300 transition-colors" />
-                      <p className="text-lg font-bold text-purple-300 group-hover:text-purple-200 transition-colors">PSD</p>
-                      <p className="text-xs text-purple-400/70 mt-1">PSD同士の比較</p>
+                      <p className="text-lg font-semibold text-purple-400 group-hover:text-purple-300 transition-colors">PSD</p>
+                      <p className="text-xs text-neutral-600 mt-1">PSD同士の比較</p>
                     </button>
 
                     <button
                       onClick={() => handleModeChange('pdf-pdf')}
-                      className="border-2 border-rose-600/50 bg-rose-950/30 rounded-xl p-6 flex flex-col items-center justify-center transition-all cursor-pointer hover:border-rose-400 hover:bg-rose-900/50 hover:scale-105 group"
+                      className="border border-white/[0.06] bg-white/[0.02] rounded-xl p-6 flex flex-col items-center justify-center transition-all cursor-pointer hover:border-[rgba(196,140,156,0.3)] hover:bg-[rgba(196,140,156,0.06)] hover:scale-[1.02] group"
                     >
                       <FileText size={40} className="mb-2 text-rose-400 group-hover:text-rose-300 transition-colors" />
-                      <p className="text-lg font-bold text-rose-300 group-hover:text-rose-200 transition-colors">PDF</p>
-                      <p className="text-xs text-rose-400/70 mt-1">PDF同士の比較</p>
+                      <p className="text-lg font-semibold text-rose-400 group-hover:text-rose-300 transition-colors">PDF</p>
+                      <p className="text-xs text-neutral-600 mt-1">PDF同士の比較</p>
                     </button>
 
                     <button
                       onClick={() => handleModeChange('psd-tiff')}
-                      className="border-2 border-orange-600/50 bg-orange-950/30 rounded-xl p-6 flex flex-col items-center justify-center transition-all cursor-pointer hover:border-orange-400 hover:bg-orange-900/50 hover:scale-105 group"
+                      className="border border-white/[0.06] bg-white/[0.02] rounded-xl p-6 flex flex-col items-center justify-center transition-all cursor-pointer hover:border-[rgba(196,164,124,0.3)] hover:bg-[rgba(196,164,124,0.06)] hover:scale-[1.02] group"
                     >
                       <Shuffle size={40} className="mb-2 text-orange-400 group-hover:text-orange-300 transition-colors" />
-                      <p className="text-lg font-bold text-orange-300 group-hover:text-orange-200 transition-colors">混合</p>
-                      <p className="text-xs text-orange-400/70 mt-1">PSD→TIFF出力の検証</p>
+                      <p className="text-lg font-semibold text-orange-400 group-hover:text-orange-300 transition-colors">混合</p>
+                      <p className="text-xs text-neutral-600 mt-1">PSD→TIFF出力の検証</p>
                     </button>
                   </div>
                 </div>
               ) : (
                 <div className="flex flex-col items-center w-full max-w-3xl">
-                  <Upload size={48} className="mb-4 opacity-20 text-neutral-500" />
-                  <p className="text-neutral-500 mb-6">{compareMode === 'psd-tiff' ? '3つのファイルをドロップして比較を開始' : 'ファイルをアップロードして比較を開始'}</p>
+                  <Upload size={48} className="mb-4 opacity-20 text-neutral-600" />
+                  <p className="text-neutral-600 mb-6">{compareMode === 'psd-tiff' ? '3つのファイルをドロップして比較を開始' : 'ファイルをアップロードして比較を開始'}</p>
 
                   <div className="flex gap-4 w-full">
                     {compareMode === 'psd-tiff' && (
                       <div
                         ref={dropZoneJsonRef}
-                        className={`flex-1 border-2 border-dashed rounded-2xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${dragOverSide === 'json' ? 'border-orange-500 bg-orange-900/30' : cropBounds ? 'border-green-600 bg-green-900/20' : 'border-neutral-700 hover:border-neutral-500 hover:bg-neutral-900/50'}`}
+                        className={`flex-1 border border-dashed rounded-xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${dragOverSide === 'json' ? 'border-orange-400/50 bg-orange-900/15' : cropBounds ? 'border-green-500/40 bg-green-900/10' : 'border-white/[0.08] hover:border-white/[0.15] hover:bg-white/[0.02]'}`}
                         onDragOver={handleDragOver}
                         onDragEnter={handleDragEnter('json')}
                         onDragLeave={handleDragLeave}
@@ -586,59 +589,59 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                         onClick={() => setIsGDriveBrowserOpen(true)}
                       >
                         <HardDrive size={36} className={`mb-3 ${dragOverSide === 'json' ? 'text-orange-400' : cropBounds ? 'text-green-400' : 'text-neutral-600'}`} />
-                        <p className={`text-sm font-medium ${dragOverSide === 'json' ? 'text-orange-300' : cropBounds ? 'text-green-300' : 'text-neutral-400'}`}>Gドライブ</p>
+                        <p className={`text-sm font-medium ${dragOverSide === 'json' ? 'text-orange-300' : cropBounds ? 'text-green-400' : 'text-neutral-500'}`}>Gドライブ</p>
                         <p className="text-xs text-neutral-600 mt-1">.json</p>
                         {cropBounds && <p className="text-xs text-green-400 mt-2">OK</p>}
                       </div>
                     )}
 
-                    <div ref={dropZoneARef} className={`flex-1 border-2 border-dashed rounded-2xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${dragOverSide === 'A' ? 'border-blue-500 bg-blue-900/30' : filesA.length > 0 ? 'border-green-600 bg-green-900/20' : 'border-neutral-700 hover:border-neutral-500 hover:bg-neutral-900/50'}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('A')} onDragLeave={handleDragLeave} onDrop={handleDrop('A')} onClick={handleFilesAUpload}>
-                      <FolderOpen size={36} className={`mb-3 ${dragOverSide === 'A' ? 'text-blue-400' : filesA.length > 0 ? 'text-green-400' : 'text-neutral-600'}`} />
-                      <p className={`text-sm font-medium ${dragOverSide === 'A' ? 'text-blue-300' : filesA.length > 0 ? 'text-green-300' : 'text-neutral-400'}`}>{modeLabels.a}</p>
-                      <p className="text-xs text-neutral-600 mt-1">{getAcceptedExtensions('A', compareMode).join(', ')}</p>
-                      {filesA.length > 0 && <p className="text-xs text-green-400 mt-2">{filesA.length}件</p>}
-                    </div>
+                    <div ref={dropZoneARef} className={`flex-1 border border-dashed rounded-xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${dragOverSide === 'A' ? 'border-blue-400/50 bg-blue-900/15' : filesA.length > 0 ? 'border-green-500/40 bg-green-900/10' : 'border-white/[0.08] hover:border-white/[0.15] hover:bg-white/[0.02]'}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('A')} onDragLeave={handleDragLeave} onDrop={handleDrop('A')} onClick={handleFilesAUpload}>
+                          <FolderOpen size={36} className={`mb-3 ${dragOverSide === 'A' ? 'text-blue-400' : filesA.length > 0 ? 'text-green-400' : 'text-neutral-600'}`} />
+                          <p className={`text-sm font-medium ${dragOverSide === 'A' ? 'text-blue-400' : filesA.length > 0 ? 'text-green-400' : 'text-neutral-500'}`}>{modeLabels.a}</p>
+                          <p className="text-xs text-neutral-600 mt-1">{getAcceptedExtensions('A', compareMode).join(', ')}</p>
+                          {filesA.length > 0 && <p className="text-xs text-green-400 mt-2">{filesA.length}件</p>}
+                        </div>
 
-                    <div ref={dropZoneBRef} className={`flex-1 border-2 border-dashed rounded-2xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${dragOverSide === 'B' ? 'border-green-500 bg-green-900/30' : filesB.length > 0 ? 'border-green-600 bg-green-900/20' : 'border-neutral-700 hover:border-neutral-500 hover:bg-neutral-900/50'}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('B')} onDragLeave={handleDragLeave} onDrop={handleDrop('B')} onClick={handleFilesBUpload}>
-                      <FolderOpen size={36} className={`mb-3 ${dragOverSide === 'B' ? 'text-green-400' : filesB.length > 0 ? 'text-green-400' : 'text-neutral-600'}`} />
-                      <p className={`text-sm font-medium ${dragOverSide === 'B' ? 'text-green-300' : filesB.length > 0 ? 'text-green-300' : 'text-neutral-400'}`}>{modeLabels.b}</p>
-                      <p className="text-xs text-neutral-600 mt-1">{getAcceptedExtensions('B', compareMode).join(', ')}</p>
-                      {filesB.length > 0 && <p className="text-xs text-green-400 mt-2">{filesB.length}件</p>}
-                    </div>
+                    <div ref={dropZoneBRef} className={`flex-1 border border-dashed rounded-xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${dragOverSide === 'B' ? 'border-green-400/50 bg-green-900/15' : filesB.length > 0 ? 'border-green-500/40 bg-green-900/10' : 'border-white/[0.08] hover:border-white/[0.15] hover:bg-white/[0.02]'}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('B')} onDragLeave={handleDragLeave} onDrop={handleDrop('B')} onClick={handleFilesBUpload}>
+                          <FolderOpen size={36} className={`mb-3 ${dragOverSide === 'B' ? 'text-green-400' : filesB.length > 0 ? 'text-green-400' : 'text-neutral-600'}`} />
+                          <p className={`text-sm font-medium ${dragOverSide === 'B' ? 'text-green-400' : filesB.length > 0 ? 'text-green-400' : 'text-neutral-500'}`}>{modeLabels.b}</p>
+                          <p className="text-xs text-neutral-600 mt-1">{getAcceptedExtensions('B', compareMode).join(', ')}</p>
+                          {filesB.length > 0 && <p className="text-xs text-green-400 mt-2">{filesB.length}件</p>}
+                        </div>
                   </div>
 
                   {compareMode === 'psd-tiff' && (
                     <div className="mt-4 flex gap-2 text-xs">
-                      <span className={cropBounds ? 'text-green-400' : 'text-neutral-500'}>1. JSON {cropBounds ? 'OK' : '...'}</span>
-                      <span className="text-neutral-600">→</span>
-                      <span className={filesA.length > 0 ? 'text-green-400' : 'text-neutral-500'}>2. PSD {filesA.length > 0 ? 'OK' : '...'}</span>
-                      <span className="text-neutral-600">→</span>
-                      <span className={filesB.length > 0 ? 'text-green-400' : 'text-neutral-500'}>3. TIFF {filesB.length > 0 ? 'OK' : '...'}</span>
+                      <span className={cropBounds ? 'text-green-400' : 'text-neutral-600'}>1. JSON {cropBounds ? 'OK' : '...'}</span>
+                      <span className="text-neutral-700">→</span>
+                      <span className={filesA.length > 0 ? 'text-green-400' : 'text-neutral-600'}>2. PSD {filesA.length > 0 ? 'OK' : '...'}</span>
+                      <span className="text-neutral-700">→</span>
+                      <span className={filesB.length > 0 ? 'text-green-400' : 'text-neutral-600'}>3. TIFF {filesB.length > 0 ? 'OK' : '...'}</span>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* ファイル未読み込み時のヘルプ表示 */}
+              {/* Help overlay when no files loaded */}
               {showHelp && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowHelp(false)} />
-                  <div className="absolute top-4 right-4 z-50 bg-neutral-900/95 backdrop-blur border border-neutral-700 rounded-lg shadow-2xl p-4 text-sm min-w-64">
-                    <div className="text-neutral-200 font-bold mb-3 flex items-center gap-2">
+                  <div className="absolute top-4 right-4 z-50 bg-neutral-800/95 backdrop-blur-md border border-white/[0.10] rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 text-sm min-w-64">
+                    <div className="text-neutral-200 font-semibold mb-3 flex items-center gap-2">
                       <HelpCircle size={16} /> 操作方法
                     </div>
                     <div className="space-y-1.5 text-neutral-300">
-                      <div className="flex justify-between"><span className="text-neutral-500">Space</span><span>A/B 切り替え</span></div>
-                      <div className="flex justify-between"><span className="text-neutral-500">Ctrl+Space</span><span>差分表示トグル</span></div>
-                      <div className="flex justify-between"><span className="text-neutral-500">↑ / ↓</span><span>{compareMode === 'pdf-pdf' ? 'ページ移動' : 'ファイル選択'}</span></div>
-                      {(compareMode === 'psd-psd' || compareMode === 'psd-tiff') && <div className="flex justify-between"><span className="text-neutral-500">P</span><span>Photoshopで開く</span></div>}
-                      {compareMode === 'pdf-pdf' && <div className="flex justify-between"><span className="text-neutral-500">Q</span><span>MojiQで開く</span></div>}
-                      <div className="flex justify-between"><span className="text-neutral-500">C</span><span>スクリーンショット</span></div>
-                      <div className="border-t border-neutral-700 my-2" />
-                      <div className="flex justify-between"><span className="text-neutral-500">Ctrl+-/+</span><span>ズーム</span></div>
-                      <div className="flex justify-between"><span className="text-neutral-500">Ctrl+0</span><span>全体表示に戻す</span></div>
-                      <div className="flex justify-between"><span className="text-neutral-500">ドラッグ</span><span>パン移動（拡大時）</span></div>
-                      {viewMode === 'diff' && <div className="flex justify-between"><span className="text-neutral-500">ホイール</span><span>ページ切替</span></div>}
+                      <div className="flex justify-between"><span className="text-neutral-600">Space</span><span>A/B 切り替え</span></div>
+                      <div className="flex justify-between"><span className="text-neutral-600">Ctrl+Space</span><span>差分表示トグル</span></div>
+                      <div className="flex justify-between"><span className="text-neutral-600">↑ / ↓</span><span>{compareMode === 'pdf-pdf' ? 'ページ移動' : 'ファイル選択'}</span></div>
+                      {(compareMode === 'psd-psd' || compareMode === 'psd-tiff') && <div className="flex justify-between"><span className="text-neutral-600">P</span><span>Photoshopで開く</span></div>}
+                      {compareMode === 'pdf-pdf' && <div className="flex justify-between"><span className="text-neutral-600">Q</span><span>MojiQで開く</span></div>}
+                      <div className="flex justify-between"><span className="text-neutral-600">C</span><span>スクリーンショット</span></div>
+                      <div className="border-t border-white/[0.06] my-2" />
+                      <div className="flex justify-between"><span className="text-neutral-600">Ctrl+-/+</span><span>ズーム</span></div>
+                      <div className="flex justify-between"><span className="text-neutral-600">Ctrl+0</span><span>全体表示に戻す</span></div>
+                      <div className="flex justify-between"><span className="text-neutral-600">ドラッグ</span><span>パン移動（拡大時）</span></div>
+                      {viewMode === 'diff' && <div className="flex justify-between"><span className="text-neutral-600">ホイール</span><span>ページ切替</span></div>}
                     </div>
                   </div>
                 </>
@@ -647,11 +650,12 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
             )}
           </div>
 
-          <div className={`bg-neutral-900 border-t border-neutral-800 flex items-center px-4 text-xs text-neutral-500 justify-between shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-t-0' : 'h-8 opacity-100'}`}>
+          {/* Status bar */}
+          <div className={`bg-neutral-900 border-t border-white/[0.06] flex items-center px-4 text-xs text-neutral-600 justify-between shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-t-0' : 'h-8 opacity-100'}`}>
             <div className="flex items-center gap-3">
               <span>#{selectedIndex + 1}</span>
-              {currentPair?.nameA && <span>{currentPair.nameA}</span>}
-              {compareMode === 'pdf-pdf' && currentPair?.totalPages && currentPair.totalPages > 1 && <span className="text-rose-300">P.{currentPage}/{currentPair.totalPages}</span>}
+              {currentPair?.nameA && <span className="text-neutral-500">{currentPair.nameA}</span>}
+              {compareMode === 'pdf-pdf' && currentPair?.totalPages && currentPair.totalPages > 1 && <span className="text-rose-400">P.{currentPage}/{currentPair.totalPages}</span>}
               {currentPair?.hasDiff && (
                 <>
                   <span className="text-red-400">差分あり</span>
@@ -660,7 +664,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
               )}
             </div>
             <div className="flex items-center gap-3">
-              <span className={`px-2 py-0.5 rounded ${compareMode === 'psd-tiff' ? 'bg-orange-900/50 text-orange-300' : compareMode === 'psd-psd' ? 'bg-purple-900/50 text-purple-300' : compareMode === 'pdf-pdf' ? 'bg-rose-900/50 text-rose-300' : 'bg-blue-900/50 text-blue-300'}`}>
+              <span className={`px-2 py-0.5 rounded-md ${compareMode === 'psd-tiff' ? 'bg-[rgba(196,164,124,0.08)] text-orange-400' : compareMode === 'psd-psd' ? 'bg-[rgba(164,140,196,0.08)] text-purple-400' : compareMode === 'pdf-pdf' ? 'bg-[rgba(196,140,156,0.08)] text-rose-400' : 'bg-[rgba(124,156,196,0.08)] text-blue-400'}`}>
                 {compareMode === 'psd-tiff' ? 'PSD-TIFF' : compareMode === 'psd-psd' ? 'PSD-PSD' : compareMode === 'pdf-pdf' ? `PDF-PDF ${preloadProgress.total > 0 ? `(${preloadProgress.loaded}/${preloadProgress.total})` : ''}` : 'TIFF-TIFF'}
               </span>
             </div>

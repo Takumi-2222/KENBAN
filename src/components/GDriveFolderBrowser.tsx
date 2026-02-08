@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+﻿import React, { useState, useEffect, useCallback } from 'react';
 import { readDir, readFile } from '@tauri-apps/plugin-fs';
 import { FolderOpen, FileJson, ChevronRight, ChevronDown, X, Loader2, Search } from 'lucide-react';
 
@@ -144,7 +144,7 @@ const FolderNode: React.FC<FolderNodeProps> = ({ item, onJsonSelect, onClose, on
         onClick={handleClick}
         className={`flex items-center gap-1 px-2 py-1 rounded cursor-pointer transition-colors ${
           item.isDirectory
-            ? 'hover:bg-neutral-700'
+            ? 'hover:bg-neutral-600'
             : isJsonFile
               ? 'hover:bg-orange-900/50 text-orange-300'
               : 'opacity-50 cursor-default'
@@ -171,7 +171,7 @@ const FolderNode: React.FC<FolderNodeProps> = ({ item, onJsonSelect, onClose, on
       </div>
 
       {item.isDirectory && isExpanded && (
-        <div className="ml-4 border-l border-neutral-700 pl-1">
+        <div className="ml-4 border-l border-white/[0.04] pl-1">
           {isLoading ? (
             <div className="px-2 py-1 text-xs text-neutral-500">読み込み中...</div>
           ) : children.length === 0 ? (
@@ -343,21 +343,21 @@ const GDriveFolderBrowser: React.FC<Props> = ({ isOpen, onClose, onJsonSelect })
     >
       <div className="bg-neutral-800 rounded-lg shadow-xl w-[500px] max-h-[70vh] flex flex-col">
         {/* ヘッダー */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-700">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.04]">
           <div className="flex items-center gap-2">
             <FolderOpen size={18} className="text-yellow-500" />
             <span className="font-medium">Gドライブから読込</span>
           </div>
           <button
             onClick={onClose}
-            className="p-1 hover:bg-neutral-700 rounded transition-colors"
+            className="p-1 hover:bg-neutral-600 rounded transition-colors"
           >
             <X size={18} />
           </button>
         </div>
 
         {/* 検索窓 */}
-        <div className="px-4 py-2 border-b border-neutral-700">
+        <div className="px-4 py-2 border-b border-white/[0.04]">
           <div className="relative">
             <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-neutral-500" />
             <input
@@ -365,7 +365,7 @@ const GDriveFolderBrowser: React.FC<Props> = ({ isOpen, onClose, onJsonSelect })
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="JSONファイル名で検索..."
-              className="w-full pl-8 pr-3 py-1.5 bg-neutral-900 border border-neutral-600 rounded text-sm text-neutral-300 placeholder-neutral-500 focus:outline-none focus:border-orange-500"
+              className="w-full pl-8 pr-3 py-1.5 bg-neutral-900 border border-white/[0.06] rounded text-sm text-neutral-300 placeholder-neutral-500 focus:outline-none focus:border-orange-500"
               autoFocus
             />
             {isSearching && (
@@ -442,7 +442,7 @@ const GDriveFolderBrowser: React.FC<Props> = ({ isOpen, onClose, onJsonSelect })
         </div>
 
         {/* フッター */}
-        <div className="px-4 py-3 border-t border-neutral-700 flex justify-end">
+        <div className="px-4 py-3 border-t border-white/[0.04] flex justify-end">
           <button
             onClick={onClose}
             className="px-4 py-1.5 bg-neutral-700 hover:bg-neutral-600 rounded text-sm transition-colors"
@@ -459,11 +459,11 @@ const GDriveFolderBrowser: React.FC<Props> = ({ isOpen, onClose, onJsonSelect })
           onClick={(e) => e.target === e.currentTarget && setPendingSelection(null)}
         >
           <div className="bg-neutral-800 rounded-lg shadow-xl w-[350px] max-h-[50vh] flex flex-col">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-700">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.04]">
               <span className="font-medium text-sm">選択範囲を選んでください</span>
               <button
                 onClick={() => setPendingSelection(null)}
-                className="p-1 hover:bg-neutral-700 rounded transition-colors"
+                className="p-1 hover:bg-neutral-600 rounded transition-colors"
               >
                 <X size={16} />
               </button>
@@ -508,7 +508,7 @@ const GDriveFolderBrowser: React.FC<Props> = ({ isOpen, onClose, onJsonSelect })
                 );
               })}
             </div>
-            <div className="px-4 py-3 border-t border-neutral-700 flex justify-end">
+            <div className="px-4 py-3 border-t border-white/[0.04] flex justify-end">
               <button
                 onClick={() => setPendingSelection(null)}
                 className="px-4 py-1.5 bg-neutral-700 hover:bg-neutral-600 rounded text-sm transition-colors"

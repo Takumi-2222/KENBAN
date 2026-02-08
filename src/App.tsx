@@ -2555,9 +2555,9 @@ export default function MangaDiffDetector() {
       {/* PDF最適化進捗オーバーレイ（MojiQと同じスタイル） */}
       {optimizeProgress && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-neutral-800 rounded-lg p-6 shadow-xl border border-neutral-600 min-w-96">
+          <div className="bg-neutral-800/95 backdrop-blur-md rounded-lg p-6 shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] min-w-96">
             <div className="flex items-center gap-3 mb-4">
-              <Loader2 className="animate-spin text-orange-400" size={24} />
+              <Loader2 className="animate-spin text-action" size={24} />
               <span className="text-lg font-semibold">{optimizeProgress.message}</span>
             </div>
             <div className="text-sm text-neutral-400 mb-3 truncate" title={optimizeProgress.fileName}>
@@ -2568,7 +2568,7 @@ export default function MangaDiffDetector() {
               <>
                 <div className="w-full h-2 bg-neutral-700 rounded-full overflow-hidden mb-2">
                   <div
-                    className="h-full bg-orange-400 transition-all duration-150"
+                    className="h-full bg-action transition-all duration-150 shadow-[0_0_8px_rgba(107,138,255,0.3)]"
                     style={{ width: `${((optimizeProgress.current || 0) / optimizeProgress.total) * 100}%` }}
                   />
                 </div>
@@ -2588,10 +2588,10 @@ export default function MangaDiffDetector() {
           style={{ background: 'rgba(0, 0, 0, 0.6)', backdropFilter: 'blur(4px)' }}
         >
           <div
-            className="rounded-2xl p-8 text-center shadow-2xl max-w-sm w-full mx-4"
+            className="rounded-2xl p-8 text-center shadow-[0_8px_32px_rgba(0,0,0,0.5)] max-w-sm w-full mx-4"
             style={{
-              background: 'linear-gradient(145deg, #2a2a2a 0%, #1a1a1a 100%)',
-              border: '1px solid rgba(255,255,255,0.1)',
+              background: '#24242c',
+              border: '1px solid rgba(255,255,255,0.10)',
             }}
           >
             {/* 確認ダイアログ */}
@@ -2607,7 +2607,7 @@ export default function MangaDiffDetector() {
                   <button
                     onClick={() => setUpdateDialogState(null)}
                     className="px-6 py-2.5 rounded-lg text-sm text-gray-400 hover:text-gray-200 transition-all"
-                    style={{ border: '1px solid rgba(255,255,255,0.15)' }}
+                    style={{ border: '1px solid rgba(255,255,255,0.10)' }}
                   >
                     後で
                   </button>
@@ -2615,8 +2615,8 @@ export default function MangaDiffDetector() {
                     onClick={handleUpdate}
                     className="px-6 py-2.5 rounded-lg text-sm font-semibold text-white transition-all hover:shadow-lg"
                     style={{
-                      background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
-                      boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)',
+                      background: 'rgba(107,138,255,0.15)',
+                      boxShadow: 'none',
                     }}
                   >
                     アップデート
@@ -2655,7 +2655,7 @@ export default function MangaDiffDetector() {
                   onClick={() => setUpdateDialogState(null)}
                   className="px-6 py-2.5 rounded-lg text-sm font-semibold text-white transition-all"
                   style={{
-                    background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
+                    background: 'rgba(107,138,255,0.15)',
                   }}
                 >
                   閉じる

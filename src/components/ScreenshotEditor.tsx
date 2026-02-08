@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { X, Square, Pen, Copy, Check, ZoomIn, ZoomOut, Maximize, Minus, Plus, Crop, Undo2, Hand, Type, MousePointer2, Download } from 'lucide-react';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
@@ -1971,7 +1971,7 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
       {/* コピー/保存完了オーバーレイ */}
       {copied && (
         <div className="fixed inset-0 flex items-center justify-center z-[200] pointer-events-none">
-          <div className="bg-neutral-800 rounded-xl p-6 max-w-md shadow-2xl border border-neutral-700">
+          <div className="bg-neutral-800 rounded-xl p-6 max-w-md shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.04]">
             <div className="text-green-400 text-lg font-bold flex items-center gap-2">
               <Check size={20} /> 完了しました
             </div>
@@ -1979,9 +1979,9 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
         </div>
       )}
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[100] p-4">
-      <div className="bg-neutral-800 rounded-xl shadow-2xl border border-neutral-700 flex flex-col w-[95vw] h-[95vh]">
+      <div className="bg-neutral-800 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.04] flex flex-col w-[95vw] h-[95vh]">
         {/* ヘッダー */}
-        <div className="flex items-center justify-between px-3 py-1.5 border-b border-neutral-700">
+        <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/[0.04]">
           <div className="flex items-center gap-2">
             {/* ツール選択 */}
             <div className="flex items-center gap-0.5 bg-neutral-900 rounded p-0.5">
@@ -2008,7 +2008,7 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
                 {/* 枠線オプションポップアップ */}
                 {showRectOptions && (
                   <div className="absolute top-full left-0 pt-1 z-20">
-                    <div className="p-2 bg-neutral-800 rounded-lg shadow-xl border border-neutral-600 whitespace-nowrap">
+                    <div className="p-2 bg-neutral-800 rounded-lg shadow-xl border border-white/[0.06] whitespace-nowrap">
                     <label className="flex items-center gap-2 cursor-pointer text-sm text-neutral-300 hover:text-white">
                       <input
                         type="checkbox"
@@ -2067,11 +2067,11 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
                 )}
                 <button
                   onClick={() => setShowColorPalette(!showColorPalette)}
-                  className="flex items-center justify-center w-7 h-7 rounded hover:bg-neutral-700 cursor-pointer"
+                  className="flex items-center justify-center w-7 h-7 rounded hover:bg-neutral-600 cursor-pointer"
                   title="色を選択"
                 >
                   <div
-                    className="rounded-full border-2 border-neutral-600"
+                    className="rounded-full border-2 border-white/[0.06]"
                     style={{
                       width: (tool === 'rect' || tool === 'pen') ? lineWidth * 2.5 : 14,
                       height: (tool === 'rect' || tool === 'pen') ? lineWidth * 2.5 : 14,
@@ -2098,7 +2098,7 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
                         <button
                           key={c}
                           onClick={() => { setColor(c); setShowColorPalette(false); }}
-                          className={`w-6 h-6 rounded border ${color === c ? 'ring-2 ring-white ring-offset-1 ring-offset-neutral-900' : 'border-neutral-600'} hover:opacity-80 transition-opacity`}
+                          className={`w-6 h-6 rounded border ${color === c ? 'ring-2 ring-white ring-offset-1 ring-offset-neutral-900' : 'border-white/[0.06]'} hover:opacity-80 transition-opacity`}
                           style={{ backgroundColor: c }}
                         />
                       ))}
@@ -2156,7 +2156,7 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
 
           <div className="flex items-center gap-2">
             {/* ショートカットヒント */}
-            <div className="flex items-center gap-3 text-xs px-2 py-1 bg-neutral-800 rounded border border-neutral-600">
+            <div className="flex items-center gap-3 text-xs px-2 py-1 bg-neutral-800 rounded border border-white/[0.06]">
               <span className="flex items-center gap-1">
                 <kbd className="px-1 py-0.5 bg-neutral-700 rounded text-neutral-200 font-mono text-[10px] border border-neutral-500">Space</kbd>
                 <span className="text-neutral-400">手</span>
@@ -2271,7 +2271,7 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
         {/* テキスト入力ダイアログ */}
         {textInput && (
           <div
-            className="fixed z-[110] bg-neutral-800 rounded-lg shadow-xl border border-neutral-600 p-2"
+            className="fixed z-[110] bg-neutral-800 rounded-lg shadow-xl border border-white/[0.06] p-2"
             style={{ left: textInput.screenX, top: textInput.screenY }}
           >
             <textarea
@@ -2317,7 +2317,7 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
         {/* 引き出し線テキスト入力ダイアログ */}
         {leaderTextInput && (
           <div
-            className="fixed z-[110] bg-neutral-800 rounded-lg shadow-xl border border-neutral-600 p-2"
+            className="fixed z-[110] bg-neutral-800 rounded-lg shadow-xl border border-white/[0.06] p-2"
             style={{ left: leaderTextInput.screenX, top: leaderTextInput.screenY }}
           >
             <div className="text-xs text-neutral-400 mb-1">補足テキスト</div>
