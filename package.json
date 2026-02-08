@@ -12,11 +12,11 @@
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.18",
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "2.4",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-fs": "^2.4.4",
     "@tauri-apps/plugin-opener": "^2",
-    "@tauri-apps/plugin-updater": "^2",
     "@tauri-apps/plugin-process": "^2",
+    "@tauri-apps/plugin-updater": "^2",
     "jspdf": "^4.0.0",
     "lucide-react": "^0.562.0",
     "pdf-lib": "^1.17.1",
