@@ -1268,16 +1268,119 @@ export default function MangaDiffDetector() {
     }
   }, [pairs, compareMode, cropBounds]);
 
+  // Phase1: 軽量差分チェック（画像エンコードなし）
+  const checkPair = useCallback(async (index: number) => {
+    const pair = pairs[index];
+    if (!pair || !pair.fileA || !pair.fileB) return;
+    if (compareMode === 'psd-tiff' && !cropBounds) return;
+
+    const startMode = compareMode;
+
+    setPairs(prev => {
+      const next = [...prev];
+      next[index] = { ...next[index], status: 'loading' };
+      return next;
+    });
+
+    try {
+      if (compareMode === 'psd-tiff') {
+        const result = await invoke<{
+          has_diff: boolean; diff_probability: number; high_density_count: number;
+          markers: DiffMarker[]; image_width: number; image_height: number;
+        }>('check_diff_heatmap', {
+          psdPath: (pair.fileA as FileWithPath).filePath,
+          tiffPath: (pair.fileB as FileWithPath).filePath,
+          cropBounds, threshold: 70
+        });
+        if (compareModeRef.current !== startMode) return;
+
+        setPairs(prev => {
+          const next = [...prev];
+          next[index] = { ...next[index],
+            hasDiff: result.has_diff, diffProbability: result.diff_probability,
+            markers: result.markers, imageWidth: result.image_width, imageHeight: result.image_height,
+            status: 'checked'
+          };
+          return next;
+        });
+      } else {
+        // tiff-tiff / psd-psd
+        const result = await invoke<{
+          has_diff: boolean; diff_count: number;
+          markers: DiffMarker[]; image_width: number; image_height: number;
+        }>('check_diff_simple', {
+          pathA: (pair.fileA as FileWithPath).filePath,
+          pathB: (pair.fileB as FileWithPath).filePath,
+          threshold: 5
+        });
+        if (compareModeRef.current !== startMode) return;
+
+        setPairs(prev => {
+          const next = [...prev];
+          next[index] = { ...next[index],
+            hasDiff: result.has_diff, markers: result.markers,
+            imageWidth: result.image_width, imageHeight: result.image_height,
+            status: 'checked'
+          };
+          return next;
+        });
+      }
+    } catch (err: any) {
+      if (compareModeRef.current !== startMode) return;
+      const errorMessage = typeof err === 'string' ? err : err?.message || String(err);
+      console.error("Check error:", errorMessage);
+      setPairs(prev => {
+        const next = [...prev];
+        next[index] = { ...next[index], status: 'error', errorMessage };
+        return next;
+      });
+    }
+  }, [pairs, compareMode, cropBounds]);
+
   // 自動処理
   useEffect(() => {
     if (processingRef.current) return;
 
-    const pendingIndex = pairs.findIndex(p => p.status === 'pending' && p.fileA && p.fileB);
-    if (pendingIndex >= 0 && (compareMode !== 'psd-tiff' || cropBounds)) {
-      processingRef.current = true;
-      processPair(pendingIndex).finally(() => { processingRef.current = false; });
+    if (compareMode === 'pdf-pdf') {
+      // PDF-PDFは従来通り逐次フルレンダー
+      const pendingIndex = pairs.findIndex(p => p.status === 'pending' && p.fileA && p.fileB);
+      if (pendingIndex >= 0) {
+        processingRef.current = true;
+        processPair(pendingIndex).finally(() => { processingRef.current = false; });
+      }
+    } else {
+      // TIFF/PSD系: Phase1軽量チェックを最大4件並列実行
+      const pendingPairs = pairs
+        .map((p, i) => ({ pair: p, index: i }))
+        .filter(({ pair }) => pair.status === 'pending' && pair.fileA && pair.fileB);
+
+      if (pendingPairs.length > 0 && (compareMode !== 'psd-tiff' || cropBounds)) {
+        processingRef.current = true;
+        const batch = pendingPairs.slice(0, 4);
+        Promise.all(batch.map(({ index }) => checkPair(index)))
+          .finally(() => { processingRef.current = false; });
+      }
     }
-  }, [pairs, processPair, compareMode, cropBounds]);
+  }, [pairs, processPair, checkPair, compareMode, cropBounds]);
+
+  // Phase2: checked状態のペアが選択されたらフルレンダー
+  const renderingIndexRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (compareMode === 'pdf-pdf') return;
+    const pair = pairs[selectedIndex];
+    if (!pair || pair.status !== 'checked') return;
+    if (renderingIndexRef.current === selectedIndex) return; // 既にレンダー中
+
+    renderingIndexRef.current = selectedIndex;
+    setPairs(prev => {
+      const next = [...prev];
+      next[selectedIndex] = { ...next[selectedIndex], status: 'rendering' };
+      return next;
+    });
+    processPair(selectedIndex).finally(() => {
+      renderingIndexRef.current = null;
+    });
+  }, [selectedIndex, pairs, compareMode, processPair]);
 
   // PDFページ切り替え
   useEffect(() => {

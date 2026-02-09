@@ -449,6 +449,26 @@ struct DiffSimpleResult {
     image_height: u32,
 }
 
+// Phase1用: 画像エンコードなしの軽量チェック結果
+#[derive(Serialize)]
+struct DiffCheckSimpleResult {
+    has_diff: bool,
+    diff_count: u32,
+    markers: Vec<DiffMarker>,
+    image_width: u32,
+    image_height: u32,
+}
+
+#[derive(Serialize)]
+struct DiffCheckHeatmapResult {
+    has_diff: bool,
+    diff_probability: f64,
+    high_density_count: u32,
+    markers: Vec<DiffMarker>,
+    image_width: u32,
+    image_height: u32,
+}
+
 #[derive(Serialize)]
 struct DiffHeatmapResult {
     src_a: String,
@@ -910,6 +930,110 @@ fn compute_diff_heatmap(
     })
 }
 
+// Phase1用: 軽量差分チェック（画像エンコードなし）
+#[tauri::command]
+fn check_diff_simple(
+    path_a: String, path_b: String, threshold: u8,
+) -> Result<DiffCheckSimpleResult, String> {
+    // 2ファイル並列デコード
+    let (img_a, img_b) = rayon::join(
+        || decode_image_file(&path_a),
+        || decode_image_file(&path_b),
+    );
+    let img_a = img_a?;
+    let img_b = img_b?;
+
+    let (wa, ha) = img_a.dimensions();
+    let (wb, hb) = img_b.dimensions();
+    let width = wa.max(wb);
+    let height = ha.max(hb);
+
+    // 必要ならリサイズ
+    let img_a = if wa != width || ha != height {
+        img_a.resize_exact(width, height, FilterType::Triangle)
+    } else {
+        img_a
+    };
+    let img_b = if wb != width || hb != height {
+        img_b.resize_exact(width, height, FilterType::Triangle)
+    } else {
+        img_b
+    };
+
+    let rgba_a = img_a.to_rgba8();
+    let rgba_b = img_b.to_rgba8();
+
+    // 差分計算
+    let (_diff_buf, diff_count, diff_pixels) =
+        diff_simple_core(rgba_a.as_raw(), rgba_b.as_raw(), width, height, threshold);
+
+    // マーカークラスタリング
+    let markers = cluster_markers(&diff_pixels, 200, 1, 300.0);
+
+    // 画像エンコードをスキップ！
+    Ok(DiffCheckSimpleResult {
+        has_diff: diff_count > 0,
+        diff_count,
+        markers,
+        image_width: width,
+        image_height: height,
+    })
+}
+
+// Phase1用: 軽量ヒートマップ差分チェック（画像エンコードなし）
+#[tauri::command]
+fn check_diff_heatmap(
+    psd_path: String, tiff_path: String, crop_bounds: CropBounds, threshold: u8,
+) -> Result<DiffCheckHeatmapResult, String> {
+    // 並列デコード
+    let (psd_result, tiff_result) = rayon::join(
+        || decode_psd_to_image(&psd_path),
+        || image::open(&tiff_path).map_err(|e| format!("Failed to open TIFF: {}", e)),
+    );
+    let psd_img = psd_result?;
+    let tiff_img = tiff_result?;
+
+    let (tiff_w, tiff_h) = tiff_img.dimensions();
+
+    // PSDをクロップ
+    let crop_w = crop_bounds.right - crop_bounds.left;
+    let crop_h = crop_bounds.bottom - crop_bounds.top;
+    let cropped = psd_img.crop_imm(crop_bounds.left, crop_bounds.top, crop_w, crop_h);
+
+    // TIFFサイズにリサイズ
+    let processed_psd = cropped.resize_exact(tiff_w, tiff_h, FilterType::Nearest);
+
+    let rgba_a = processed_psd.to_rgba8();
+    let rgba_b = tiff_img.to_rgba8();
+
+    // ヒートマップ差分計算
+    let (_heatmap_buf, high_density_count, high_pixels) =
+        diff_heatmap_core(rgba_a.as_raw(), rgba_b.as_raw(), tiff_w, tiff_h, threshold);
+
+    // マーカークラスタリング
+    let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
+
+    // diffProbability計算
+    let diff_probability = if high_density_count > 0 {
+        let total_pixels = (tiff_w as f64) * (tiff_h as f64);
+        let base_prob = 70.0;
+        let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
+        ((base_prob + additional) * 10.0).round() / 10.0
+    } else {
+        0.0
+    };
+
+    // 画像エンコードをスキップ！
+    Ok(DiffCheckHeatmapResult {
+        has_diff: high_density_count > 0,
+        diff_probability,
+        high_density_count,
+        markers,
+        image_width: tiff_w,
+        image_height: tiff_h,
+    })
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -939,7 +1063,9 @@ pub fn run() {
             list_files_in_folder,
             open_pdf_in_mojiq,
             compute_diff_simple,
-            compute_diff_heatmap
+            compute_diff_heatmap,
+            check_diff_simple,
+            check_diff_heatmap
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -38,7 +38,7 @@ export interface FilePair {
   hasDiff: boolean;
   diffProbability: number;
   totalPages: number;
-  status: 'pending' | 'loading' | 'done' | 'error';
+  status: 'pending' | 'loading' | 'checked' | 'rendering' | 'done' | 'error';
   errorMessage?: string;
   markers?: DiffMarker[];
   imageWidth?: number;

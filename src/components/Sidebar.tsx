@@ -137,12 +137,12 @@ export default function Sidebar({
   parallelFileListRef,
 }: SidebarProps) {
   // Derived values
-  const filteredPairs = filterDiffOnly ? pairs.filter(p => p.status === 'done' && p.hasDiff) : pairs;
+  const filteredPairs = filterDiffOnly ? pairs.filter(p => (p.status === 'done' || p.status === 'checked') && p.hasDiff) : pairs;
 
   const stats = {
     total: pairs.length,
-    done: pairs.filter(p => p.status === 'done').length,
-    diff: pairs.filter(p => p.status === 'done' && p.hasDiff).length,
+    done: pairs.filter(p => p.status === 'done' || p.status === 'checked').length,
+    diff: pairs.filter(p => (p.status === 'done' || p.status === 'checked') && p.hasDiff).length,
     pending: pairs.filter(p => p.status === 'pending' && p.fileA && p.fileB).length
   };
 
@@ -321,8 +321,8 @@ export default function Sidebar({
                     <span className="text-blue-400 text-[10px] shrink-0">A:</span>
                     <span className="text-xs text-neutral-300 truncate">{pair.nameA?.replace(/\.(psd|tiff?|pdf)/i, '') || '-'}</span>
                   </div>
-                  {pair.status === 'done' && (pair.hasDiff ? <AlertTriangle size={12} className="text-red-400 shrink-0" /> : <CheckCircle size={12} className="text-green-400 shrink-0" />)}
-                  {pair.status === 'loading' && <Loader2 size={12} className="text-action animate-spin shrink-0" />}
+                  {(pair.status === 'done' || pair.status === 'checked') && (pair.hasDiff ? <AlertTriangle size={12} className="text-red-400 shrink-0" /> : <CheckCircle size={12} className="text-green-400 shrink-0" />)}
+                  {(pair.status === 'loading' || pair.status === 'rendering') && <Loader2 size={12} className="text-action animate-spin shrink-0" />}
                   {pair.status === 'pending' && pair.fileA && pair.fileB && <span className="text-xs text-neutral-600 shrink-0">...</span>}
                   {pair.status === 'error' && <span className="text-xs text-red-400 shrink-0">!</span>}
                 </div>

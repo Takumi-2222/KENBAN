@@ -246,7 +246,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
               {compareMode !== 'pdf-pdf' && (
                 <button
                   onClick={refreshDiffMode}
-                  disabled={!currentPair || currentPair.status === 'loading'}
+                  disabled={!currentPair || currentPair.status === 'loading' || currentPair.status === 'checked' || currentPair.status === 'rendering'}
                   className="text-xs rounded-md bg-neutral-700 hover:bg-neutral-600 text-neutral-300 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 px-2.5 py-1.5 transition-colors"
                   title="ファイルを再読み込み (F5)"
                 >
@@ -359,8 +359,10 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
           {/* Main viewer area */}
           <div className={`flex-1 relative overflow-hidden flex items-center justify-center bg-neutral-950 ${isFullscreen ? '' : 'p-4'} transition-colors ${!currentPair && dragOverSide ? 'bg-neutral-900' : ''}`} onDragOver={handleDragOver}>
             {currentPair ? (
-              currentPair.status === 'loading' ? (
-                <div className="flex flex-col items-center text-action"><Loader2 size={48} className="animate-spin mb-4" /><p>解析中...</p></div>
+              currentPair.status === 'loading' || currentPair.status === 'rendering' ? (
+                <div className="flex flex-col items-center text-action"><Loader2 size={48} className="animate-spin mb-4" /><p>{currentPair.status === 'rendering' ? '画像を生成中...' : '解析中...'}</p></div>
+              ) : currentPair.status === 'checked' ? (
+                <div className="flex flex-col items-center text-action"><Loader2 size={48} className="animate-spin mb-4" /><p>画像を生成中...</p></div>
               ) : currentPair.status === 'error' ? (
                 <div className="text-red-400 text-center"><p>読み込みに失敗しました</p><p className="text-xs text-neutral-600 mt-2">{currentPair.errorMessage}</p></div>
               ) : currentPair.status === 'pending' ? (
