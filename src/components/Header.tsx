@@ -16,7 +16,7 @@ const Header: React.FC<HeaderProps> = ({ isFullscreen, fullscreenTransitioning, 
           title="初期画面に戻る"
         >
           <Layers size={18} className="text-action" />
-          漫画差分検出
+          KENBAN
         </button>
         <div className="flex-1" />
         <span className="text-[10px] px-2 py-0.5 rounded-md bg-green-900/30 text-green-400 font-medium tracking-wider uppercase">
