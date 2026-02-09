@@ -170,8 +170,8 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
   return (
         <div className="flex-1 flex flex-col bg-black relative">
           {/* Toolbar */}
-          <div className={`bg-neutral-800/80 backdrop-blur-sm border-b border-white/[0.06] flex items-center justify-between z-10 shrink-0 px-3 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-b-0' : 'h-11 opacity-100'}`}>
-            <div className="flex items-center gap-1.5">
+          <div className={`bg-neutral-800/80 backdrop-blur-sm border-b border-white/[0.06] flex items-center justify-between z-10 shrink-0 px-3 transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-b-0 overflow-hidden' : 'h-11 opacity-100 overflow-visible'}`}>
+            <div className="flex items-center gap-1.5 shrink-0 flex-nowrap">
               {/* Segmented view mode control */}
               <div className="bg-neutral-950 rounded-lg flex p-0.5 gap-0.5">
                 <button onClick={() => setViewMode('A')} disabled={!currentPair || currentPair.status !== 'done'} className={`text-xs rounded-md px-2 py-1 transition-all ${viewMode === 'A' ? 'bg-neutral-700 text-neutral-100 shadow-sm' : 'text-neutral-500 hover:text-neutral-200 disabled:opacity-30'}`}>{modeLabels.a}</button>
@@ -316,7 +316,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
               </button>
             </div>
 
-            <div className="flex items-center text-xs text-neutral-500 gap-1.5">
+            <div className="flex items-center text-xs text-neutral-500 gap-1.5 flex-nowrap min-w-0">
               {compareMode === 'pdf-pdf' && currentPair?.status === 'done' && currentPair.totalPages > 1 && (
                 <div className="flex items-center gap-1 px-2 py-1 bg-neutral-950 rounded-lg border border-white/[0.06]">
                   <button onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} disabled={currentPage <= 1} tabIndex={-1} className="px-2 py-1 rounded-md hover:bg-white/[0.06] disabled:opacity-30 transition-colors">◀</button>
