@@ -1,4 +1,4 @@
-# KENBAN-viewer (検版ビューアー)
+# KENBAN
 
 ## プロジェクト概要
 2つの画像ファイル（TIFF/PSD/PDF）を比較して差分を検出する検版支援デスクトップアプリ。
@@ -84,7 +84,7 @@ cargo check            # Rustのみコンパイルチェック（src-tauri/内�
 ## 自動更新
 - tauri-plugin-updater 使用
 - GitHub Releases から latest.json を参照
-- productName は ASCII (`KENBAN-viewer`) でないと latest.json 生成が壊れる
+- productName は ASCII (`KENBAN`) でないと latest.json 生成が壊れる
 
 ## 注意事項
 - App.tsx が巨大なので編集時は行番号を確認すること

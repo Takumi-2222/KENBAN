@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    kenban_viewer_lib::run()
+    kenban_lib::run()
 }
