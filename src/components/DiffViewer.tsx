@@ -204,7 +204,15 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                       : currentPair?.fileB as FileWithPath | null;
                     if (pdfFile?.filePath) {
                       releaseMemoryBeforeMojiQ();
-                      setTimeout(() => invoke('open_pdf_in_mojiq', { pdfPath: pdfFile.filePath, page: currentPage }), 100);
+                      setTimeout(() => {
+                        invoke('open_pdf_in_mojiq', { pdfPath: pdfFile.filePath, page: currentPage })
+                          .catch((err: unknown) => {
+                            console.error('[MojiQ] Error:', err);
+                            alert(`MojiQの起動に失敗しました:\n${err}`);
+                          });
+                      }, 100);
+                    } else {
+                      console.warn('[MojiQ] DiffViewer: filePath is undefined', pdfFile);
                     }
                   }}
                   disabled={!currentPair || currentPair.status !== 'done'}

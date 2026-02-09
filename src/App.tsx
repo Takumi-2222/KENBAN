@@ -302,6 +302,14 @@ export default function MangaDiffDetector() {
         try {
           const json = JSON.parse(ev.target?.result as string);
 
+          // パターン0: presetData.selectionRangesが空配列（クロップなし＝PSD全体を使用）
+          if (json.presetData?.selectionRanges && json.presetData.selectionRanges.length === 0) {
+            const noCrop: CropBounds = { left: 0, top: 0, right: -1, bottom: -1 };
+            setCropBounds(noCrop);
+            resolve(noCrop);
+            return;
+          }
+
           // パターン1: presetData.selectionRanges[0].bounds (新形式)
           if (json.presetData?.selectionRanges?.length > 0 && json.presetData.selectionRanges[0].bounds) {
             const bounds = json.presetData.selectionRanges[0].bounds;
@@ -2353,7 +2361,13 @@ export default function MangaDiffDetector() {
             const file = parallelActivePanel === 'A' ? fileA : fileB;
             if (file?.type === 'pdf') {
               releaseMemoryBeforeMojiQ();
-              setTimeout(() => invoke('open_pdf_in_mojiq', { pdfPath: file.path, page: file.pdfPage || 1 }), 100);
+              setTimeout(() => {
+                invoke('open_pdf_in_mojiq', { pdfPath: file.path, page: file.pdfPage || 1 })
+                  .catch((err: unknown) => {
+                    console.error('[MojiQ] Error:', err);
+                    alert(`MojiQの起動に失敗しました:\n${err}`);
+                  });
+              }, 100);
             }
           } else {
             // 同期モードで両方PDFの場合はポップアップ
@@ -2441,7 +2455,15 @@ export default function MangaDiffDetector() {
         if (pdfFile?.filePath && pdfFile.name.toLowerCase().endsWith('.pdf')) {
           e.preventDefault();
           releaseMemoryBeforeMojiQ();
-          setTimeout(() => invoke('open_pdf_in_mojiq', { pdfPath: pdfFile.filePath, page: currentPage }), 100);
+          setTimeout(() => {
+            invoke('open_pdf_in_mojiq', { pdfPath: pdfFile.filePath, page: currentPage })
+              .catch((err: unknown) => {
+                console.error('[MojiQ] Error:', err);
+                alert(`MojiQの起動に失敗しました:\n${err}`);
+              });
+          }, 100);
+        } else if (pdfFile) {
+          console.warn('[MojiQ] App Q-key diff: filePath is undefined', { filePath: pdfFile?.filePath, name: pdfFile?.name });
         }
       }
       // Cキー: 修正指示モード（即座にScreenshotEditorを開く）

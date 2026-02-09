@@ -192,9 +192,9 @@ fn find_mojiq_path() -> Option<PathBuf> {
         candidates.push(local_app_data.join("Programs").join("mojiq").join("MojiQ.exe"));
     }
 
-    // 4. デスクトップ > MojiK > MojiQ（開発用）
+    // 4. デスクトップ > MojiQ（開発用）
     if let Some(desktop) = dirs::desktop_dir() {
-        candidates.push(desktop.join("MojiK").join("MojiQ").join("dist").join("win-unpacked").join("MojiQ.exe"));
+        candidates.push(desktop.join("MojiQ").join("dist").join("win-unpacked").join("MojiQ.exe"));
     }
 
     // 最初に見つかったパスを返す
@@ -210,9 +210,13 @@ fn find_mojiq_path() -> Option<PathBuf> {
 // MojiQでPDFを開く（ページ指定付き）
 #[tauri::command]
 fn open_pdf_in_mojiq(pdf_path: String, page: Option<u32>) -> Result<(), String> {
+    println!("[MojiQ] open_pdf_in_mojiq called: pdf_path={}, page={:?}", pdf_path, page);
+
     // MojiQ.exeのパスを探す
     let mojiq_path = find_mojiq_path()
         .ok_or_else(|| "MojiQ.exe が見つかりません。MojiQをインストールしてください。".to_string())?;
+
+    println!("[MojiQ] Found MojiQ at: {:?}", mojiq_path);
 
     let mut cmd = std::process::Command::new(&mojiq_path);
 

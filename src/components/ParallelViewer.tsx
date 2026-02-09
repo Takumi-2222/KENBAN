@@ -280,7 +280,13 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           const file = parallelActivePanel === 'A' ? currentFileA : currentFileB;
                           if (file?.type === 'pdf') {
                             releaseMemoryBeforeMojiQ();
-                            setTimeout(() => invoke('open_pdf_in_mojiq', { pdfPath: file.path, page: file.pdfPage || 1 }), 100);
+                            setTimeout(() => {
+                              invoke('open_pdf_in_mojiq', { pdfPath: file.path, page: file.pdfPage || 1 })
+                                .catch((err: unknown) => {
+                                  console.error('[MojiQ] Error:', err);
+                                  alert(`MojiQの起動に失敗しました:\n${err}`);
+                                });
+                            }, 100);
                           }
                         } else {
                           // 同期モードで両方PDFの場合はポップアップ
@@ -303,7 +309,13 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                             onClick={() => {
                               if (currentFileA?.type === 'pdf') {
                                 releaseMemoryBeforeMojiQ();
-                                setTimeout(() => invoke('open_pdf_in_mojiq', { pdfPath: currentFileA.path, page: currentFileA.pdfPage || 1 }), 100);
+                                setTimeout(() => {
+                                  invoke('open_pdf_in_mojiq', { pdfPath: currentFileA.path, page: currentFileA.pdfPage || 1 })
+                                    .catch((err: unknown) => {
+                                      console.error('[MojiQ] Error:', err);
+                                      alert(`MojiQの起動に失敗しました:\n${err}`);
+                                    });
+                                }, 100);
                               }
                               setShowMojiQSelectPopup(false);
                             }}
@@ -317,7 +329,13 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                             onClick={() => {
                               if (currentFileB?.type === 'pdf') {
                                 releaseMemoryBeforeMojiQ();
-                                setTimeout(() => invoke('open_pdf_in_mojiq', { pdfPath: currentFileB.path, page: currentFileB.pdfPage || 1 }), 100);
+                                setTimeout(() => {
+                                  invoke('open_pdf_in_mojiq', { pdfPath: currentFileB.path, page: currentFileB.pdfPage || 1 })
+                                    .catch((err: unknown) => {
+                                      console.error('[MojiQ] Error:', err);
+                                      alert(`MojiQの起動に失敗しました:\n${err}`);
+                                    });
+                                }, 100);
                               }
                               setShowMojiQSelectPopup(false);
                             }}
