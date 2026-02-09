@@ -47,6 +47,8 @@ export default function MangaDiffDetector() {
   const [showHelp, setShowHelp] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true); // デフォルトで折りたたみ
+  const [easterEgg, setEasterEgg] = useState(false);
+  const easterEggBufferRef = useRef('');
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const imageContainerRef = useRef<HTMLDivElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);  // PDF表示用Canvas（差分モード）
@@ -128,6 +130,23 @@ export default function MangaDiffDetector() {
     setInitialModeSelect(false);
     setSidebarCollapsed(false);
   }, [compareMode, initialModeSelect]);
+
+  // 隠しコマンド: 初期画面で "kenpan" と入力するとロゴ変更
+  useEffect(() => {
+    if (!initialModeSelect) return;
+    const handler = (e: KeyboardEvent) => {
+      easterEggBufferRef.current += e.key.toLowerCase();
+      if (easterEggBufferRef.current.length > 6) {
+        easterEggBufferRef.current = easterEggBufferRef.current.slice(-6);
+      }
+      if (easterEggBufferRef.current === 'kenpan') {
+        setEasterEgg(prev => !prev);
+        easterEggBufferRef.current = '';
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [initialModeSelect]);
 
   // モード変更時にリセット
   useEffect(() => {
@@ -2791,7 +2810,7 @@ export default function MangaDiffDetector() {
         </div>
       )}
 
-      <Header isFullscreen={isFullscreen} fullscreenTransitioning={fullscreenTransitioning} onReset={handleReset} />
+      <Header isFullscreen={isFullscreen} fullscreenTransitioning={fullscreenTransitioning} onReset={handleReset} easterEgg={easterEgg} />
 
       <div className="flex-1 flex min-h-0">
         <Sidebar
