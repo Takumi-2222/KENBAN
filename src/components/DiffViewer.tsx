@@ -316,9 +316,9 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
               </button>
             </div>
 
-            <div className="flex items-center text-xs text-neutral-500 gap-1.5 flex-nowrap min-w-0">
+            <div className="flex items-center text-xs text-neutral-500 gap-1.5 flex-nowrap min-w-0 overflow-hidden">
               {compareMode === 'pdf-pdf' && currentPair?.status === 'done' && currentPair.totalPages > 1 && (
-                <div className="flex items-center gap-1 px-2 py-1 bg-neutral-950 rounded-lg border border-white/[0.06]">
+                <div className="flex items-center gap-1 px-2 py-1 bg-neutral-950 rounded-lg border border-white/[0.06] shrink-0">
                   <button onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} disabled={currentPage <= 1} tabIndex={-1} className="px-2 py-1 rounded-md hover:bg-white/[0.06] disabled:opacity-30 transition-colors">◀</button>
                   <span className="px-2 min-w-[80px] text-center text-neutral-300">{isLoadingPage ? <Loader2 size={12} className="inline animate-spin" /> : <>{currentPage} / {currentPair.totalPages}</>}</span>
                   <button onClick={() => setCurrentPage(prev => Math.min(prev + 1, currentPair.totalPages))} disabled={currentPage >= currentPair.totalPages} tabIndex={-1} className="px-2 py-1 rounded-md hover:bg-white/[0.06] disabled:opacity-30 transition-colors">▶</button>
@@ -332,7 +332,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
               {/* Shortcut hints */}
               <button
                 onClick={() => setShowHelp(!showHelp)}
-                className="flex items-center gap-2 text-[11px] px-2 py-1 bg-neutral-950 rounded-lg border border-white/[0.06] hover:bg-neutral-900 transition-colors"
+                className="flex items-center gap-2 text-[11px] px-2 py-1 bg-neutral-950 rounded-lg border border-white/[0.06] hover:bg-neutral-900 transition-colors min-w-0 overflow-hidden shrink"
                 title="クリックで詳細表示"
               >
                 <span className="flex items-center gap-1">
