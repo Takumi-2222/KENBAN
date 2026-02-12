@@ -57,6 +57,7 @@ impl ImageCache {
 // グローバルキャッシュ（Mutexで保護）
 struct AppState {
     image_cache: Mutex<ImageCache>,
+    cli_args: Vec<String>,
 }
 
 // ============== 画像処理結果 ==============
@@ -1040,8 +1041,14 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+#[tauri::command]
+fn get_cli_args(state: State<'_, AppState>) -> Vec<String> {
+    state.cli_args.clone()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let args: Vec<String> = std::env::args().collect();
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
@@ -1050,6 +1057,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(AppState {
             image_cache: Mutex::new(ImageCache::new(100)), // 最大100件キャッシュ
+            cli_args: args,
         })
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -1065,7 +1073,8 @@ pub fn run() {
             compute_diff_simple,
             compute_diff_heatmap,
             check_diff_simple,
-            check_diff_heatmap
+            check_diff_heatmap,
+            get_cli_args
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

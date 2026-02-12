@@ -188,6 +188,48 @@ export default function MangaDiffDetector() {
     return () => clearTimeout(timer);
   }, []);
 
+  // CLI引数による差分モード自動起動（--diff folderA folderB）
+  useEffect(() => {
+    (async () => {
+      try {
+        const args: string[] = await invoke('get_cli_args');
+        const diffIdx = args.indexOf('--diff');
+        if (diffIdx === -1 || diffIdx + 2 >= args.length) return;
+
+        const folderA = args[diffIdx + 1];
+        const folderB = args[diffIdx + 2];
+
+        // tiff-tiffモードで差分チェック画面を直接起動
+        setCompareMode('tiff-tiff');
+        setInitialModeSelect(false);
+        setSidebarCollapsed(false);
+        setAppMode('diff-check');
+
+        // フォルダパスを設定
+        setDiffFolderA(folderA);
+        setDiffFolderB(folderB);
+
+        // フォルダ内ファイルを読み込み
+        const extensions = ['tif', 'tiff'];
+
+        const filePathsA = await invoke<string[]>('list_files_in_folder', {
+          path: folderA, extensions,
+        });
+        const filesFromA = await readFilesFromPaths(filePathsA);
+        setFilesA(filesFromA.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })));
+
+        const filePathsB = await invoke<string[]>('list_files_in_folder', {
+          path: folderB, extensions,
+        });
+        const filesFromB = await readFilesFromPaths(filePathsB);
+        setFilesB(filesFromB.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })));
+      } catch (err) {
+        console.error('CLI diff load error:', err);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 更新を実行
   const handleUpdate = async () => {
     if (!pendingUpdateRef.current) return;

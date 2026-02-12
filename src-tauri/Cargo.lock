@@ -2146,7 +2146,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kenban-viewer"
+name = "kenban"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
