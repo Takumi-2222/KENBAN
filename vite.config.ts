@@ -15,6 +15,8 @@ export default defineConfig(async () => ({
       output: {
         manualChunks: {
           pdfjs: ['pdfjs-dist'],
+          'pdf-tools': ['jspdf', 'pdf-lib'],
+          vendor: ['react', 'react-dom'],
         },
       },
     },
