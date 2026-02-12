@@ -188,7 +188,8 @@ export default function MangaDiffDetector() {
     return () => clearTimeout(timer);
   }, []);
 
-  // CLI引数による差分モード自動起動（--diff folderA folderB）
+  // CLI引数による差分モード自動起動（--diff [mode] folderA folderB）
+  // mode: "tiff"（デフォルト）または "psd"
   useEffect(() => {
     (async () => {
       try {
@@ -196,11 +197,21 @@ export default function MangaDiffDetector() {
         const diffIdx = args.indexOf('--diff');
         if (diffIdx === -1 || diffIdx + 2 >= args.length) return;
 
-        const folderA = args[diffIdx + 1];
-        const folderB = args[diffIdx + 2];
+        // モード判定: --diff の次が "tiff" or "psd" ならモード指定、そうでなければフォルダパス
+        let mode: 'tiff-tiff' | 'psd-psd' = 'tiff-tiff';
+        let folderAIdx = diffIdx + 1;
+        const possibleMode = args[diffIdx + 1];
+        if (possibleMode === 'tiff' || possibleMode === 'psd') {
+          mode = possibleMode === 'psd' ? 'psd-psd' : 'tiff-tiff';
+          folderAIdx = diffIdx + 2;
+        }
 
-        // tiff-tiffモードで差分チェック画面を直接起動
-        setCompareMode('tiff-tiff');
+        if (folderAIdx + 1 >= args.length) return;
+        const folderA = args[folderAIdx];
+        const folderB = args[folderAIdx + 1];
+
+        // 差分チェック画面を直接起動
+        setCompareMode(mode);
         setInitialModeSelect(false);
         setSidebarCollapsed(false);
         setAppMode('diff-check');
@@ -209,8 +220,8 @@ export default function MangaDiffDetector() {
         setDiffFolderA(folderA);
         setDiffFolderB(folderB);
 
-        // フォルダ内ファイルを読み込み
-        const extensions = ['tif', 'tiff'];
+        // モードに応じた拡張子でフォルダ内ファイルを読み込み
+        const extensions = mode === 'psd-psd' ? ['psd', 'psb'] : ['tif', 'tiff'];
 
         const filePathsA = await invoke<string[]>('list_files_in_folder', {
           path: folderA, extensions,
