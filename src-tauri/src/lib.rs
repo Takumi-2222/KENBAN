@@ -6,6 +6,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Cursor;
+use std::panic;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::collections::{HashMap, VecDeque};
@@ -79,36 +80,50 @@ struct PsdImageResult {
 }
 
 // PSDファイルをパースしてBase64 PNG画像を返す
+// psd crateを優先し、panic時はフォールバックパーサーにフェイルオーバー
 #[tauri::command]
 fn parse_psd(path: String) -> Result<PsdImageResult, String> {
-    // ファイル読み込み
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    // PSD解析
-    let psd = Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {}", e))?;
-    let width = psd.width();
-    let height = psd.height();
-    let rgba = psd.rgba();
+    // まずpsd crateで試行
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let psd = Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {}", e))?;
+        let width = psd.width();
+        let height = psd.height();
+        let rgba = psd.rgba();
 
-    // RGBA画像を作成
-    let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
-        ImageBuffer::from_raw(width, height, rgba)
-            .ok_or_else(|| "Failed to create image buffer".to_string())?;
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_raw(width, height, rgba)
+                .ok_or_else(|| "Failed to create image buffer".to_string())?;
 
-    // PNG形式でエンコード
-    let mut png_data = Cursor::new(Vec::new());
-    img.write_to(&mut png_data, image::ImageFormat::Png)
-        .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+        let mut png_data = Cursor::new(Vec::new());
+        img.write_to(&mut png_data, image::ImageFormat::Png)
+            .map_err(|e| format!("Failed to encode PNG: {}", e))?;
 
-    // Base64エンコード
-    let base64_str = STANDARD.encode(png_data.get_ref());
-    let data_url = format!("data:image/png;base64,{}", base64_str);
+        let base64_str = STANDARD.encode(png_data.get_ref());
+        let data_url = format!("data:image/png;base64,{}", base64_str);
 
-    Ok(PsdImageResult {
-        data_url,
-        width,
-        height,
-    })
+        Ok::<PsdImageResult, String>(PsdImageResult {
+            data_url,
+            width,
+            height,
+        })
+    }));
+
+    match result {
+        Ok(Ok(r)) => Ok(r),
+        _ => {
+            // psd crateが失敗/panic → フォールバックパーサーで再試行
+            let img = decode_psd_fallback(&bytes)?;
+            let (width, height) = img.dimensions();
+            let mut png_data = Cursor::new(Vec::new());
+            img.write_to(&mut png_data, image::ImageFormat::Png)
+                .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+            let base64_str = STANDARD.encode(png_data.get_ref());
+            let data_url = format!("data:image/png;base64,{}", base64_str);
+            Ok(PsdImageResult { data_url, width, height })
+        }
+    }
 }
 
 // ファイルをシステムのデフォルトアプリで開く
@@ -484,6 +499,236 @@ struct DiffHeatmapResult {
     image_height: u32,
 }
 
+// panicメッセージを文字列として抽出
+#[allow(dead_code)]
+fn extract_panic_message(panic_info: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic_info.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "Unknown error in PSD decoder".to_string()
+    }
+}
+
+// ============== フォールバックPSDパーサー ==============
+// psd crateがZIP圧縮等でpanicする場合に使用する軽量パーサー。
+// PSDの合成画像(Image Data Section)のみを読み取る。レイヤー合成は行わない。
+// RLE圧縮・非圧縮・CMYK/RGBカラーモードに対応。
+
+/// PSDバイト列からRGBA DynamicImageをデコード（フォールバック用）
+fn decode_psd_fallback(bytes: &[u8]) -> Result<DynamicImage, String> {
+    if bytes.len() < 26 {
+        return Err("PSD file too small".to_string());
+    }
+    // シグネチャ検証
+    if &bytes[0..4] != b"8BPS" {
+        return Err("Not a PSD file".to_string());
+    }
+    let version = u16::from_be_bytes([bytes[4], bytes[5]]);
+    let is_psb = version == 2;
+    if version != 1 && version != 2 {
+        return Err(format!("Unsupported PSD version: {}", version));
+    }
+
+    let mut offset: usize = 12;
+
+    // ファイルヘッダー
+    let channels = read_u16(bytes, &mut offset)? as usize;
+    let height = read_u32(bytes, &mut offset)? as usize;
+    let width = read_u32(bytes, &mut offset)? as usize;
+    let depth = read_u16(bytes, &mut offset)?;
+    let color_mode = read_u16(bytes, &mut offset)?;
+
+    if depth != 8 {
+        return Err(format!("フォールバックパーサーは{}bit深度に未対応です", depth));
+    }
+
+    // Color Mode Data セクションをスキップ
+    let color_data_len = read_u32(bytes, &mut offset)? as usize;
+    offset += color_data_len;
+
+    // Image Resources セクションをスキップ
+    let resource_len = read_u32(bytes, &mut offset)? as usize;
+    offset += resource_len;
+
+    // Layer and Mask Information セクションをスキップ
+    let layer_len = if is_psb {
+        read_u64(bytes, &mut offset)? as usize
+    } else {
+        read_u32(bytes, &mut offset)? as usize
+    };
+    offset += layer_len;
+
+    // Image Data Section
+    let compression = read_u16(bytes, &mut offset)?;
+    let ch_to_read = if color_mode == 4 {
+        channels.min(4) // CMYK: 4チャンネル
+    } else {
+        channels.min(3) // RGB等: 3チャンネル
+    };
+    let pixel_count = width * height;
+
+    let channel_data: Vec<Vec<u8>> = match compression {
+        0 => {
+            // 非圧縮 (Raw)
+            let mut chs = Vec::with_capacity(ch_to_read);
+            for c in 0..channels {
+                if c < ch_to_read {
+                    if offset + pixel_count > bytes.len() {
+                        return Err("PSD data truncated (raw channel)".to_string());
+                    }
+                    chs.push(bytes[offset..offset + pixel_count].to_vec());
+                }
+                offset += pixel_count;
+            }
+            chs
+        }
+        1 => {
+            // RLE圧縮
+            // 各スキャンラインのバイト数を読み取り
+            let total_rows = channels * height;
+            if offset + total_rows * 2 > bytes.len() {
+                return Err("PSD data truncated (RLE row counts)".to_string());
+            }
+            let mut row_counts = Vec::with_capacity(total_rows);
+            for _ in 0..total_rows {
+                row_counts.push(read_u16(bytes, &mut offset)? as usize);
+            }
+
+            let mut chs = Vec::with_capacity(ch_to_read);
+            let mut row_idx = 0;
+            for c in 0..channels {
+                if c < ch_to_read {
+                    let mut ch_data = vec![0u8; pixel_count];
+                    let mut pixel_off = 0;
+                    for _ in 0..height {
+                        let row_len = row_counts[row_idx];
+                        row_idx += 1;
+                        if offset + row_len > bytes.len() {
+                            return Err("PSD data truncated (RLE data)".to_string());
+                        }
+                        decode_packbits(bytes, offset, row_len, &mut ch_data, pixel_off, width);
+                        offset += row_len;
+                        pixel_off += width;
+                    }
+                    chs.push(ch_data);
+                } else {
+                    for _ in 0..height {
+                        offset += row_counts[row_idx];
+                        row_idx += 1;
+                    }
+                }
+            }
+            chs
+        }
+        _ => {
+            return Err(format!("未対応の圧縮方式です (compression={})", compression));
+        }
+    };
+
+    // RGBA画像を組み立て
+    let mut rgba = vec![0u8; pixel_count * 4];
+
+    if color_mode == 4 {
+        // CMYK → RGB変換
+        let c_ch = &channel_data[0];
+        let m_ch = &channel_data[1.min(channel_data.len() - 1)];
+        let y_ch = &channel_data[2.min(channel_data.len() - 1)];
+        let k_ch = if channel_data.len() >= 4 { &channel_data[3] } else { c_ch };
+        for i in 0..pixel_count {
+            let j = i * 4;
+            let (c, m, y, k) = (c_ch[i] as u16, m_ch[i] as u16, y_ch[i] as u16, k_ch[i] as u16);
+            rgba[j]     = 255 - ((c + k).min(255) as u8);
+            rgba[j + 1] = 255 - ((m + k).min(255) as u8);
+            rgba[j + 2] = 255 - ((y + k).min(255) as u8);
+            rgba[j + 3] = 255;
+        }
+    } else {
+        // RGB / Grayscale
+        let r = &channel_data[0];
+        let g = if channel_data.len() >= 2 { &channel_data[1] } else { r };
+        let b = if channel_data.len() >= 3 { &channel_data[2] } else { r };
+        for i in 0..pixel_count {
+            let j = i * 4;
+            rgba[j]     = r[i];
+            rgba[j + 1] = g[i];
+            rgba[j + 2] = b[i];
+            rgba[j + 3] = 255;
+        }
+    }
+
+    let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
+        ImageBuffer::from_raw(width as u32, height as u32, rgba)
+            .ok_or_else(|| "Failed to create image buffer (fallback)".to_string())?;
+    Ok(DynamicImage::ImageRgba8(img_buf))
+}
+
+// PackBits (RLE) デコード
+fn decode_packbits(src: &[u8], src_start: usize, src_len: usize, dst: &mut [u8], dst_start: usize, dst_len: usize) {
+    let mut s = src_start;
+    let mut d = dst_start;
+    let src_end = src_start + src_len;
+    let dst_end = dst_start + dst_len;
+    while d < dst_end && s < src_end {
+        let n = src[s] as i8;
+        s += 1;
+        if n >= 0 {
+            // リテラルコピー: n+1 バイト
+            let count = (n as usize) + 1;
+            let end = (d + count).min(dst_end);
+            while d < end && s < src_end {
+                dst[d] = src[s];
+                d += 1;
+                s += 1;
+            }
+        } else if n > -128 {
+            // 繰り返し: 1-n 回
+            let count = (1 - n as i16) as usize;
+            if s >= src_end { break; }
+            let val = src[s];
+            s += 1;
+            let end = (d + count).min(dst_end);
+            while d < end {
+                dst[d] = val;
+                d += 1;
+            }
+        }
+        // n == -128 はNOP
+    }
+}
+
+// バイト読み取りヘルパー
+fn read_u16(bytes: &[u8], offset: &mut usize) -> Result<u16, String> {
+    if *offset + 2 > bytes.len() {
+        return Err("PSD data truncated (u16)".to_string());
+    }
+    let val = u16::from_be_bytes([bytes[*offset], bytes[*offset + 1]]);
+    *offset += 2;
+    Ok(val)
+}
+
+fn read_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, String> {
+    if *offset + 4 > bytes.len() {
+        return Err("PSD data truncated (u32)".to_string());
+    }
+    let val = u32::from_be_bytes([bytes[*offset], bytes[*offset + 1], bytes[*offset + 2], bytes[*offset + 3]]);
+    *offset += 4;
+    Ok(val)
+}
+
+fn read_u64(bytes: &[u8], offset: &mut usize) -> Result<u64, String> {
+    if *offset + 8 > bytes.len() {
+        return Err("PSD data truncated (u64)".to_string());
+    }
+    let val = u64::from_be_bytes([
+        bytes[*offset], bytes[*offset + 1], bytes[*offset + 2], bytes[*offset + 3],
+        bytes[*offset + 4], bytes[*offset + 5], bytes[*offset + 6], bytes[*offset + 7],
+    ]);
+    *offset += 8;
+    Ok(val)
+}
+
 // 拡張子でPSD/TIFF/その他を自動判定してデコード
 fn decode_image_file(path: &str) -> Result<DynamicImage, String> {
     let lower = path.to_lowercase();
@@ -495,16 +740,29 @@ fn decode_image_file(path: &str) -> Result<DynamicImage, String> {
 }
 
 // PSDファイルをDynamicImageとしてデコード
+// psd crateを優先し、panic時はフォールバックパーサーにフェイルオーバー
 fn decode_psd_to_image(path: &str) -> Result<DynamicImage, String> {
     let bytes = fs::read(path).map_err(|e| format!("Failed to read PSD: {}", e))?;
-    let psd = Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {}", e))?;
-    let width = psd.width();
-    let height = psd.height();
-    let rgba = psd.rgba();
-    let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
-        ImageBuffer::from_raw(width, height, rgba)
-            .ok_or_else(|| "Failed to create image buffer from PSD".to_string())?;
-    Ok(DynamicImage::ImageRgba8(img_buf))
+
+    // まずpsd crateで試行（レイヤー合成等の高機能）
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let psd = Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {}", e))?;
+        let width = psd.width();
+        let height = psd.height();
+        let rgba = psd.rgba();
+        let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_raw(width, height, rgba)
+                .ok_or_else(|| "Failed to create image buffer from PSD".to_string())?;
+        Ok::<DynamicImage, String>(DynamicImage::ImageRgba8(img_buf))
+    }));
+
+    match result {
+        Ok(Ok(img)) => Ok(img),
+        _ => {
+            // psd crateが失敗/panic → フォールバックパーサーで再試行
+            decode_psd_fallback(&bytes)
+        }
+    }
 }
 
 // RGBA画像をbase64 data URLにエンコード
