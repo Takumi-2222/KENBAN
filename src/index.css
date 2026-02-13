@@ -102,9 +102,10 @@
   --color-amber-800: #554520;
   --color-amber-900: #3d3018;
 
-  /* --- Teal --- */
+  /* --- Teal (Muted — Text-verify mode) --- */
   --color-teal-200: #a8d4d4;
   --color-teal-300: #80bcbc;
+  --color-teal-400: #6ca8a8;
   --color-teal-500: #509494;
   --color-teal-600: #448484;
   --color-teal-700: #3a6464;
@@ -143,6 +144,28 @@
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.14);
+}
+
+/* --- Text Verify Light Panel — "Editorial Proofing" --- */
+.tv-panel {
+  --tv-paper: #f7f5f0;
+  --tv-paper-warm: #f2efe8;
+  --tv-header: #edeae3;
+  --tv-rule: rgba(0, 0, 0, 0.08);
+  --tv-rule-strong: rgba(0, 0, 0, 0.14);
+  --tv-ink: #1e1e22;
+  --tv-ink-secondary: #5a5a64;
+  --tv-ink-tertiary: #8e8e98;
+  --tv-accent: #3a7070;
+  --tv-accent-wash: rgba(58, 112, 112, 0.08);
+}
+
+.tv-panel ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.tv-panel ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.22);
 }
 
 /* --- Base body styles --- */

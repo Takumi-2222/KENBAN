@@ -3,9 +3,9 @@ import {
   PanelLeft, PanelLeftClose, Eye, Columns2, HardDrive,
   Settings, ChevronUp, ChevronDown, Target,
   AlertTriangle, CheckCircle, Loader2,
-  FolderOpen, FileText,
+  FolderOpen, FileText, Upload, ClipboardPaste, Trash2, Type,
 } from 'lucide-react';
-import type { CompareMode, AppMode, FileWithPath, CropBounds, FilePair, ParallelFileEntry, PageCache } from '../types';
+import type { CompareMode, AppMode, FileWithPath, CropBounds, FilePair, ParallelFileEntry, PageCache, TextVerifyPage } from '../types';
 
 interface ModeLabels {
   a: string;
@@ -69,14 +69,25 @@ interface SidebarProps {
   fileListRef: React.RefObject<HTMLDivElement | null>;
   pageListRef: React.RefObject<HTMLDivElement | null>;
   parallelFileListRef: React.RefObject<HTMLDivElement | null>;
+  // テキスト照合モード用
+  textVerifyPages: TextVerifyPage[];
+  textVerifyCurrentIndex: number;
+  setTextVerifyCurrentIndex: (v: number) => void;
+  textVerifyMemoRaw: string;
+  handleSelectTextVerifyFolder: () => void;
+  handleSelectTextVerifyMemo: () => void;
+  handlePasteTextVerifyMemo: () => void;
+  clearTextVerify: () => void;
+  textVerifyFileListRef: React.RefObject<HTMLDivElement | null>;
 }
 
 // Mode accent color helpers
-const modeAccent = {
+const modeAccent: Record<string, { text: string; bg: string; border: string }> = {
   'tiff-tiff': { text: 'text-blue-400', bg: 'bg-[rgba(124,156,196,0.12)]', border: 'border-[rgba(124,156,196,0.20)]' },
   'psd-psd': { text: 'text-purple-400', bg: 'bg-[rgba(164,140,196,0.12)]', border: 'border-[rgba(164,140,196,0.20)]' },
   'pdf-pdf': { text: 'text-rose-400', bg: 'bg-[rgba(196,140,156,0.12)]', border: 'border-[rgba(196,140,156,0.20)]' },
   'psd-tiff': { text: 'text-orange-400', bg: 'bg-[rgba(196,164,124,0.12)]', border: 'border-[rgba(196,164,124,0.20)]' },
+  'text-verify': { text: 'text-teal-400', bg: 'bg-[rgba(108,168,168,0.12)]', border: 'border-[rgba(108,168,168,0.20)]' },
 };
 
 export default function Sidebar({
@@ -135,6 +146,15 @@ export default function Sidebar({
   fileListRef,
   pageListRef,
   parallelFileListRef,
+  textVerifyPages,
+  textVerifyCurrentIndex,
+  setTextVerifyCurrentIndex,
+  textVerifyMemoRaw,
+  handleSelectTextVerifyFolder,
+  handleSelectTextVerifyMemo,
+  handlePasteTextVerifyMemo,
+  clearTextVerify,
+  textVerifyFileListRef,
 }: SidebarProps) {
   // Derived values
   const filteredPairs = filterDiffOnly ? pairs.filter(p => (p.status === 'done' || p.status === 'checked') && p.hasDiff) : pairs;
@@ -199,10 +219,9 @@ export default function Sidebar({
                 }`}
               >
                 <Columns2 size={14} />
-                並列ビュー
+                並列
               </button>
             </div>
-            <p className="text-[10px] text-neutral-600 text-center mt-1.5 tracking-wide">Vキーで切り替え</p>
           </div>
 
           {appMode === 'diff-check' ? (
@@ -210,49 +229,96 @@ export default function Sidebar({
           <div className="p-3 border-b border-white/[0.04]">
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs text-neutral-500 tracking-wide">比較モード</span>
-              <span className="text-xs text-neutral-600">{stats.done}/{stats.total}</span>
+              {compareMode !== 'text-verify' && <span className="text-xs text-neutral-600">{stats.done}/{stats.total}</span>}
             </div>
 
-            <div className="flex gap-1 mb-3">
+            <div className="flex gap-1 mb-2">
               <button onClick={() => handleModeChange('tiff-tiff')} className={`flex-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('tiff-tiff')}`}>TIFF</button>
               <button onClick={() => handleModeChange('psd-psd')} className={`flex-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('psd-psd')}`}>PSD</button>
               <button onClick={() => handleModeChange('pdf-pdf')} className={`flex-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('pdf-pdf')}`}>PDF</button>
               <button onClick={() => handleModeChange('psd-tiff')} className={`flex-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('psd-tiff')}`}>混合</button>
             </div>
+            <button onClick={() => handleModeChange('text-verify')} className={`w-full flex items-center justify-center gap-1.5 text-xs py-1.5 rounded-md transition-all mb-3 ${modeButtonClass('text-verify')}`}>
+              <Type size={12} />テキスト照合
+            </button>
 
-            <div className="flex gap-2">
-              <div className={`flex-1 relative rounded-md transition-colors ${dragOverSide === 'A' ? 'ring-1 ring-blue-400/50 bg-blue-900/20' : ''}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('A')} onDragLeave={handleDragLeave} onDrop={handleDrop('A')}>
-                <button onClick={handleFilesAUpload} className="w-full text-center py-2 bg-neutral-700 hover:bg-neutral-600 rounded-md cursor-pointer text-xs transition-colors">
-                  {modeLabels.a} ({filesA.length})
-                </button>
-                {dragOverSide === 'A' && <div className="absolute inset-0 flex items-center justify-center bg-blue-600/60 rounded-md text-white text-xs font-medium pointer-events-none">ドロップ</div>}
-              </div>
-              <div className={`flex-1 relative rounded-md transition-colors ${dragOverSide === 'B' ? 'ring-1 ring-green-400/50 bg-green-900/20' : ''}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('B')} onDragLeave={handleDragLeave} onDrop={handleDrop('B')}>
-                <button onClick={handleFilesBUpload} className="w-full text-center py-2 bg-neutral-700 hover:bg-neutral-600 rounded-md cursor-pointer text-xs transition-colors">
-                  {modeLabels.b} ({filesB.length})
-                </button>
-                {dragOverSide === 'B' && <div className="absolute inset-0 flex items-center justify-center bg-green-600/60 rounded-md text-white text-xs font-medium pointer-events-none">ドロップ</div>}
-              </div>
-            </div>
-
-            <div className="mt-1.5 text-[10px] text-neutral-600 text-center tracking-wide">ファイル/フォルダをドロップ可能</div>
-
-            {/* File name display */}
-            {(filesA.length > 0 || filesB.length > 0) && (
-              <div className="mt-2 space-y-1 text-xs">
-                <div className="flex items-center gap-1.5 px-1">
-                  <span className="text-blue-400 font-medium shrink-0">A:</span>
-                  <span className="text-neutral-300 truncate">
-                    {filesA.length > 0 ? ((filesA[0] as FileWithPath).filePath?.split(/[/\\]/).slice(-2, -1)[0] || filesA[0].name) : '-'}
-                  </span>
+            {compareMode === 'text-verify' ? (
+              /* テキスト照合モードのコントロール */
+              <>
+                <div className="space-y-2">
+                  <button
+                    onClick={handleSelectTextVerifyFolder}
+                    className="w-full flex items-center gap-2 py-2 px-3 bg-neutral-700 hover:bg-neutral-600 rounded-md text-xs transition-colors"
+                  >
+                    <FolderOpen size={14} className="text-teal-300 shrink-0" />
+                    <span className="flex-1 text-left truncate">PSDフォルダ</span>
+                    <span className="text-neutral-600 shrink-0">({textVerifyPages.length})</span>
+                  </button>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={handleSelectTextVerifyMemo}
+                      className="flex-1 flex items-center gap-2 py-2 px-3 bg-neutral-700 hover:bg-neutral-600 rounded-l-md text-xs transition-colors"
+                    >
+                      <Upload size={14} className="text-teal-300 shrink-0" />
+                      <span className="flex-1 text-left truncate">{textVerifyMemoRaw ? 'メモ読込済' : 'テキストメモ'}</span>
+                    </button>
+                    <button
+                      onClick={handlePasteTextVerifyMemo}
+                      className="py-2 px-2 bg-teal-900/30 hover:bg-teal-900/50 rounded-r-md text-xs transition-colors"
+                      title="クリップボードから貼り付け"
+                    >
+                      <ClipboardPaste size={14} className="text-teal-300" />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5 px-1">
-                  <span className="text-green-400 font-medium shrink-0">B:</span>
-                  <span className="text-neutral-300 truncate">
-                    {filesB.length > 0 ? ((filesB[0] as FileWithPath).filePath?.split(/[/\\]/).slice(-2, -1)[0] || filesB[0].name) : '-'}
-                  </span>
+                {(textVerifyPages.length > 0 || textVerifyMemoRaw) && (
+                  <button
+                    onClick={clearTextVerify}
+                    className="w-full mt-3 py-1 bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded-md text-xs transition-colors flex items-center justify-center gap-1"
+                  >
+                    <Trash2 size={12} />
+                    クリア
+                  </button>
+                )}
+              </>
+            ) : (
+              /* 通常の差分比較コントロール */
+              <>
+                <div className="flex gap-2">
+                  <div className={`flex-1 relative rounded-md transition-colors ${dragOverSide === 'A' ? 'ring-1 ring-blue-400/50 bg-blue-900/20' : ''}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('A')} onDragLeave={handleDragLeave} onDrop={handleDrop('A')}>
+                    <button onClick={handleFilesAUpload} className="w-full text-center py-2 bg-neutral-700 hover:bg-neutral-600 rounded-md cursor-pointer text-xs transition-colors">
+                      {modeLabels.a} ({filesA.length})
+                    </button>
+                    {dragOverSide === 'A' && <div className="absolute inset-0 flex items-center justify-center bg-blue-600/60 rounded-md text-white text-xs font-medium pointer-events-none">ドロップ</div>}
+                  </div>
+                  <div className={`flex-1 relative rounded-md transition-colors ${dragOverSide === 'B' ? 'ring-1 ring-green-400/50 bg-green-900/20' : ''}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('B')} onDragLeave={handleDragLeave} onDrop={handleDrop('B')}>
+                    <button onClick={handleFilesBUpload} className="w-full text-center py-2 bg-neutral-700 hover:bg-neutral-600 rounded-md cursor-pointer text-xs transition-colors">
+                      {modeLabels.b} ({filesB.length})
+                    </button>
+                    {dragOverSide === 'B' && <div className="absolute inset-0 flex items-center justify-center bg-green-600/60 rounded-md text-white text-xs font-medium pointer-events-none">ドロップ</div>}
+                  </div>
                 </div>
-              </div>
+
+                <div className="mt-1.5 text-[10px] text-neutral-600 text-center tracking-wide">ファイル/フォルダをドロップ可能</div>
+
+                {/* File name display */}
+                {(filesA.length > 0 || filesB.length > 0) && (
+                  <div className="mt-2 space-y-1 text-xs">
+                    <div className="flex items-center gap-1.5 px-1">
+                      <span className="text-blue-400 font-medium shrink-0">A:</span>
+                      <span className="text-neutral-300 truncate">
+                        {filesA.length > 0 ? ((filesA[0] as FileWithPath).filePath?.split(/[/\\]/).slice(-2, -1)[0] || filesA[0].name) : '-'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 px-1">
+                      <span className="text-green-400 font-medium shrink-0">B:</span>
+                      <span className="text-neutral-300 truncate">
+                        {filesB.length > 0 ? ((filesB[0] as FileWithPath).filePath?.split(/[/\\]/).slice(-2, -1)[0] || filesB[0].name) : '-'}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
             {compareMode === 'psd-tiff' && (
@@ -277,9 +343,46 @@ export default function Sidebar({
               </div>
             )}
 
-            {stats.pending > 0 && <div className="mt-2 w-full bg-white/[0.06] rounded-full h-1"><div className="bg-action h-1 rounded-full transition-all shadow-[0_0_6px_rgba(107,138,255,0.3)]" style={{ width: `${(stats.done / stats.total) * 100}%` }} /></div>}
+            {compareMode !== 'text-verify' && stats.pending > 0 && <div className="mt-2 w-full bg-white/[0.06] rounded-full h-1"><div className="bg-action h-1 rounded-full transition-all shadow-[0_0_6px_rgba(107,138,255,0.3)]" style={{ width: `${(stats.done / stats.total) * 100}%` }} /></div>}
           </div>
 
+          {compareMode === 'text-verify' ? (
+          /* テキスト照合ファイルリスト */
+          <div ref={textVerifyFileListRef} className="flex-1 overflow-y-auto">
+            {textVerifyPages.length === 0 && (
+              <div className="p-4 text-center text-neutral-600 text-xs">PSDフォルダを選択</div>
+            )}
+            {textVerifyPages.map((page, idx) => {
+              const isSelected = textVerifyCurrentIndex === idx;
+              const hasDiff = page.diffResult ? (page.diffResult.psd.some(d => d.removed) || page.diffResult.memo.some(d => d.added)) : false;
+              return (
+                <button
+                  key={idx}
+                  data-index={idx}
+                  onClick={() => setTextVerifyCurrentIndex(idx)}
+                  className={`w-full text-left px-3 py-2 border-b border-white/[0.03] transition-colors ${
+                    isSelected
+                      ? 'bg-[rgba(128,188,188,0.06)] border-l-2 border-l-teal-400'
+                      : 'hover:bg-white/[0.03]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`text-xs truncate ${isSelected ? 'text-teal-300' : 'text-neutral-300'}`}>
+                      {page.fileName.replace(/\.psd$/i, '')}
+                    </span>
+                    {page.status === 'loading' && <Loader2 size={12} className="text-teal-300 animate-spin shrink-0" />}
+                    {page.status === 'done' && !hasDiff && <CheckCircle size={12} className="text-green-400 shrink-0" />}
+                    {page.status === 'done' && hasDiff && <AlertTriangle size={12} className="text-red-400 shrink-0" />}
+                    {page.status === 'error' && <span className="text-xs text-red-400 shrink-0">!</span>}
+                    {page.status === 'pending' && !page.memoText && <span className="text-[10px] text-neutral-600 shrink-0">-</span>}
+                    {page.status === 'pending' && page.memoText && <span className="text-[10px] text-neutral-600 shrink-0">...</span>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          ) : (
+          <>
           <div className="border-b border-white/[0.04]">
             <button onClick={() => setSettingsOpen(!settingsOpen)} className="w-full px-3 py-2 flex items-center justify-between text-xs text-neutral-500 hover:bg-white/[0.04] transition-colors">
               <span className="flex items-center gap-1">
@@ -364,6 +467,8 @@ export default function Sidebar({
                 })}
               </div>
             </div>
+          )}
+          </>
           )}
           </>
           ) : (

@@ -7,7 +7,7 @@ Tauri 2 + React + TypeScript + Rust で構成。
 ## 技術スタック
 - **フロントエンド**: React + TypeScript + Tailwind CSS (Vite)
 - **バックエンド**: Rust (Tauri 2)
-- **画像処理**: `image` crate v0.25 (tiff/png/jpeg), `psd` crate v0.3, `rayon` v1.10
+- **画像処理**: `image` crate v0.25 (tiff/png/jpeg), `psd` crate v0.3 + フォールバックパーサー, `rayon` v1.10
 - **PDF**: pdfjs-dist (JS側), pdf-lib, jsPDF
 
 ## ディレクトリ構成
@@ -85,6 +85,16 @@ cargo check            # Rustのみコンパイルチェック（src-tauri/内�
 - tauri-plugin-updater 使用
 - GitHub Releases から latest.json を参照
 - productName は ASCII (`KENBAN`) でないと latest.json 生成が壊れる
+
+## PSDデコード戦略
+`psd` crate v0.3.5 はZIP圧縮や16bit深度でpanic（強制終了）するため、二段構えで対処:
+1. **psd crate** を `catch_unwind` でラップして試行（レイヤー合成等の高機能）
+2. 失敗/panic時は **フォールバックパーサー** (`decode_psd_fallback`) で再試行
+   - PSD合成画像(Image Data Section)のみ読み取る軽量パーサー
+   - Raw / RLE (PackBits) 圧縮、RGB / CMYK / Grayscale、PSB に対応
+   - ZIP圧縮は未対応（エラー表示で止まる、クラッシュはしない）
+
+対象関数: `parse_psd` (並列ビュー表示用) / `decode_psd_to_image` (差分比較用)
 
 ## 注意事項
 - App.tsx が巨大なので編集時は行番号を確認すること

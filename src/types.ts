@@ -1,6 +1,6 @@
 // ============== 型定義 ==============
 
-export type CompareMode = 'tiff-tiff' | 'psd-psd' | 'pdf-pdf' | 'psd-tiff';
+export type CompareMode = 'tiff-tiff' | 'psd-psd' | 'pdf-pdf' | 'psd-tiff' | 'text-verify';
 export type AppMode = 'diff-check' | 'parallel-view';
 export type ViewMode = 'A' | 'B' | 'diff' | 'A-full';
 
@@ -72,4 +72,33 @@ export interface ParallelImageCache {
     width: number;
     height: number;
   };
+}
+
+// ============== テキスト照合モード用の型定義 ==============
+
+export interface ExtractedTextLayer {
+  text: string;
+  layerName: string;
+  x: number;
+  y: number;
+  visible: boolean;
+}
+
+export interface TextVerifyPage {
+  fileIndex: number;
+  fileName: string;
+  filePath: string;
+  imageSrc: string | null;
+  extractedText: string;
+  extractedLayers: ExtractedTextLayer[];
+  memoText: string;
+  diffResult: { psd: DiffPart[]; memo: DiffPart[] } | null;
+  status: 'pending' | 'loading' | 'done' | 'error';
+  errorMessage?: string;
+}
+
+export interface DiffPart {
+  value: string;
+  added?: boolean;
+  removed?: boolean;
 }

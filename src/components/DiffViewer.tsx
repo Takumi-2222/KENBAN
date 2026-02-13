@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import {
   FolderOpen, HelpCircle, Layers, FileDiff, Upload, Loader2,
   Target, HardDrive, FileText, RefreshCw, FileImage, Palette, Shuffle, Maximize2,
-  PanelLeftClose
+  PanelLeftClose, Type
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import type { CompareMode, AppMode, ViewMode, FileWithPath, FilePair, CropBounds, DiffMarker } from '../types';
@@ -579,6 +579,15 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                       <Shuffle size={40} className="mb-2 text-orange-400 group-hover:text-orange-300 transition-colors" />
                       <p className="text-lg font-semibold text-orange-400 group-hover:text-orange-300 transition-colors">混合</p>
                       <p className="text-xs text-neutral-600 mt-1">PSD→TIFF出力の検証</p>
+                    </button>
+
+                    <button
+                      onClick={() => handleModeChange('text-verify')}
+                      className="border border-white/[0.06] bg-white/[0.02] rounded-xl p-6 flex flex-col items-center justify-center transition-all cursor-pointer hover:border-[rgba(108,168,168,0.3)] hover:bg-[rgba(108,168,168,0.06)] hover:scale-[1.02] group col-span-2"
+                    >
+                      <Type size={40} className="mb-2 text-teal-400 group-hover:text-teal-300 transition-colors" />
+                      <p className="text-lg font-semibold text-teal-400 group-hover:text-teal-300 transition-colors">テキスト照合</p>
+                      <p className="text-xs text-neutral-600 mt-1">PSDテキストとメモの照合</p>
                     </button>
                   </div>
                 </div>

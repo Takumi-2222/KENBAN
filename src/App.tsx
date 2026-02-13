@@ -14,7 +14,10 @@ import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import DiffViewer from './components/DiffViewer';
 import ParallelViewer from './components/ParallelViewer';
-import type { CompareMode, AppMode, FileWithPath, CropBounds, DiffMarker, FilePair, PageCache, ParallelFileEntry, ParallelImageCache } from './types';
+import TextVerifyViewer from './components/TextVerifyViewer';
+import { extractVisibleTextLayers, combineTextForComparison, normalizeTextForComparison, computeLineSetDiff } from './utils/textExtract';
+import { parseMemo, matchPageToFile } from './utils/memoParser';
+import type { CompareMode, AppMode, FileWithPath, CropBounds, DiffMarker, FilePair, PageCache, ParallelFileEntry, ParallelImageCache, TextVerifyPage } from './types';
 
 
 
@@ -93,6 +96,12 @@ export default function MangaDiffDetector() {
   const [showFullscreenHint, setShowFullscreenHint] = useState(false); // 全画面ヒント表示
   const [instructionButtonsHidden, setInstructionButtonsHidden] = useState(false); // 指示エディタボタン非表示状態
 
+  // ============== テキスト照合モード用のstate ==============
+  const [textVerifyPages, setTextVerifyPages] = useState<TextVerifyPage[]>([]);
+  const [textVerifyCurrentIndex, setTextVerifyCurrentIndex] = useState(0);
+  const [textVerifyMemoRaw, setTextVerifyMemoRaw] = useState('');
+  const textVerifyFileListRef = useRef<HTMLDivElement>(null);
+
   // ============== 自動更新 ==============
   const [updateDialogState, setUpdateDialogState] = useState<
     | { type: 'confirm'; version: string; notes?: string }
@@ -109,7 +118,7 @@ export default function MangaDiffDetector() {
   const parallelDragStartRefB = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
 
   // モード切り替え関数（即座にペアをクリアして誤った処理を防ぐ）
-  const handleModeChange = useCallback((newMode: 'tiff-tiff' | 'psd-psd' | 'pdf-pdf' | 'psd-tiff') => {
+  const handleModeChange = useCallback((newMode: CompareMode) => {
     // 現在のモードと同じ場合
     if (newMode === compareMode) {
       // 初期モード選択画面からの場合は画面を閉じる
@@ -652,9 +661,13 @@ export default function MangaDiffDetector() {
   const dropZoneJsonRef = useRef<HTMLDivElement>(null);
   const parallelDropZoneARef = useRef<HTMLDivElement>(null);
   const parallelDropZoneBRef = useRef<HTMLDivElement>(null);
+  const textVerifyDropPsdRef = useRef<HTMLDivElement>(null);
+  const textVerifyDropMemoRef = useRef<HTMLDivElement>(null);
   useEffect(() => { dragOverSideRef.current = dragOverSide; }, [dragOverSide]);
   const appModeRef = useRef<AppMode>(appMode);
   useEffect(() => { appModeRef.current = appMode; }, [appMode]);
+  const textVerifyMemoRawRef = useRef(textVerifyMemoRaw);
+  useEffect(() => { textVerifyMemoRawRef.current = textVerifyMemoRaw; }, [textVerifyMemoRaw]);
 
   // Tauriパスからファイルを読み込んでFileオブジェクトに変換
   const readFilesFromPaths = useCallback(async (paths: string[]): Promise<File[]> => {
@@ -752,7 +765,9 @@ export default function MangaDiffDetector() {
       || checkZone(dropZoneARef, 'A')
       || checkZone(dropZoneBRef, 'B')
       || checkZone(parallelDropZoneARef, 'parallelA')
-      || checkZone(parallelDropZoneBRef, 'parallelB');
+      || checkZone(parallelDropZoneBRef, 'parallelB')
+      || checkZone(textVerifyDropPsdRef, 'textVerifyPsd')
+      || checkZone(textVerifyDropMemoRef, 'textVerifyMemo');
   }, []);
 
   // parallel-viewモードのTauriドロップ処理関数
@@ -830,6 +845,69 @@ export default function MangaDiffDetector() {
             return;
           }
 
+          // テキスト照合モードのドロップ処理
+          if (side === 'textVerifyPsd') {
+            const firstPath = paths[0];
+            try {
+              // フォルダかファイルか判定
+              let folderPath: string;
+              try {
+                await readDir(firstPath);
+                folderPath = firstPath;
+              } catch {
+                // ファイルの場合、親フォルダを使用
+                folderPath = firstPath.replace(/[/\\][^/\\]+$/, '');
+              }
+              const files = await invoke<string[]>('list_files_in_folder', {
+                path: folderPath,
+                extensions: ['psd'],
+              });
+              if (files.length === 0) return;
+
+              const pages: TextVerifyPage[] = files.map((filePath, index) => {
+                const fileName = filePath.split(/[/\\]/).pop() || '';
+                return {
+                  fileIndex: index,
+                  fileName,
+                  filePath,
+                  imageSrc: null,
+                  extractedText: '',
+                  extractedLayers: [],
+                  memoText: '',
+                  diffResult: null,
+                  status: 'pending' as const,
+                };
+              });
+              setTextVerifyPages(pages);
+              setTextVerifyCurrentIndex(0);
+              // メモが既にあればマッチング
+              const currentMemo = textVerifyMemoRawRef.current;
+              if (currentMemo) {
+                const memoPages = parseMemo(currentMemo);
+                setTextVerifyPages(pages.map(page => {
+                  const pageNum = matchPageToFile(page.fileName);
+                  const memoText = pageNum !== null ? (memoPages.get(pageNum) || '') : '';
+                  return { ...page, memoText };
+                }));
+              }
+            } catch (err) {
+              console.error('Failed to load PSD folder from drop:', err);
+            }
+            return;
+          }
+          if (side === 'textVerifyMemo') {
+            const firstPath = paths[0];
+            try {
+              const bytes = await tauriReadFile(firstPath);
+              const decoder = new TextDecoder('utf-8');
+              const text = decoder.decode(bytes);
+              applyTextVerifyMemo(text);
+            } catch (err) {
+              console.error('Failed to load memo from drop:', err);
+            }
+            return;
+          }
+
           // 並列ビューモードのときは差分モード用のドロップを無視
           if (appModeRef.current === 'parallel-view' && (side === 'A' || side === 'B' || side === 'json')) {
             return;
@@ -874,6 +952,7 @@ export default function MangaDiffDetector() {
 
     const unlistenPromise = setupDragDrop();
     return () => { unlistenPromise.then(fn => fn()); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readFilesFromPaths, isAcceptedFile, getAcceptedExtensions, loadJsonFile, getDropZoneFromPosition, handleParallelTauriDrop]);
 
   // DataTransferItemからファイルを再帰的に取得（ブラウザ用フォールバック）
@@ -2270,6 +2349,206 @@ export default function MangaDiffDetector() {
     }
   }, []);
 
+  // ============== テキスト照合モード: ハンドラ ==============
+
+  // PSDフォルダ選択
+  const handleSelectTextVerifyFolder = useCallback(async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: 'PSDフォルダを選択',
+      });
+      if (!selected || typeof selected !== 'string') return;
+
+      const files = await invoke<string[]>('list_files_in_folder', {
+        path: selected,
+        extensions: ['psd'],
+      });
+      if (files.length === 0) return;
+
+      const pages: TextVerifyPage[] = files.map((filePath, index) => {
+        const fileName = filePath.split(/[/\\]/).pop() || '';
+        return {
+          fileIndex: index,
+          fileName,
+          filePath,
+          imageSrc: null,
+          extractedText: '',
+          extractedLayers: [],
+          memoText: '',
+          diffResult: null,
+          status: 'pending' as const,
+        };
+      });
+
+      setTextVerifyPages(pages);
+      setTextVerifyCurrentIndex(0);
+
+      // メモが既に読み込まれていればマッチング
+      if (textVerifyMemoRaw) {
+        const memoPages = parseMemo(textVerifyMemoRaw);
+        const updated = pages.map(page => {
+          const pageNum = matchPageToFile(page.fileName);
+          const memoText = pageNum !== null ? (memoPages.get(pageNum) || '') : '';
+          return { ...page, memoText };
+        });
+        setTextVerifyPages(updated);
+      }
+    } catch (err) {
+      console.error('Failed to select text verify folder:', err);
+    }
+  }, [textVerifyMemoRaw]);
+
+  // テキストメモファイル選択
+  const handleSelectTextVerifyMemo = useCallback(async () => {
+    const selected = await open({
+      title: 'テキストメモを選択',
+      filters: [{ name: 'テキストファイル', extensions: ['txt', 'text', 'csv'] }],
+    });
+    if (!selected || typeof selected !== 'string') return;
+
+    const bytes = await tauriReadFile(selected);
+    const decoder = new TextDecoder('utf-8');
+    const text = decoder.decode(bytes);
+    applyTextVerifyMemo(text);
+  }, []);
+
+  // テキストメモを適用
+  const applyTextVerifyMemo = useCallback((text: string) => {
+    setTextVerifyMemoRaw(text);
+    const memoPages = parseMemo(text);
+
+    setTextVerifyPages(prev => prev.map(page => {
+      const pageNum = matchPageToFile(page.fileName);
+      const memoText = pageNum !== null ? (memoPages.get(pageNum) || '') : '';
+      return { ...page, memoText, diffResult: null, status: page.extractedText ? 'done' as const : page.status };
+    }));
+  }, []);
+
+  // クリップボードから貼り付け
+  const handlePasteTextVerifyMemo = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text.trim()) {
+        applyTextVerifyMemo(text);
+      }
+    } catch {
+      // Clipboard API失敗
+    }
+  }, [applyTextVerifyMemo]);
+
+  // クリア
+  const clearTextVerify = useCallback(() => {
+    setTextVerifyPages([]);
+    setTextVerifyCurrentIndex(0);
+    setTextVerifyMemoRaw('');
+  }, []);
+
+  // テキスト抽出 + 差分計算（全ページ自動処理、現在ページ優先）
+  const textVerifyPagesRef = useRef(textVerifyPages);
+  textVerifyPagesRef.current = textVerifyPages;
+
+  useEffect(() => {
+    if (compareMode !== 'text-verify') return;
+    if (textVerifyPages.length === 0) return;
+    if (!textVerifyMemoRaw) return; // メモ未読込なら処理しない
+
+    let cancelled = false;
+
+    const processPage = async (idx: number) => {
+      if (cancelled) return;
+      const latestPages = textVerifyPagesRef.current;
+      const page = latestPages[idx];
+      if (!page || page.status !== 'pending') return;
+
+      // loading状態に更新
+      setTextVerifyPages(prev => prev.map((p, i) =>
+        i === idx ? { ...p, status: 'loading' as const } : p
+      ));
+
+      try {
+        // 画像取得とテキスト抽出を並列実行
+        const [imageResult, fileBytes] = await Promise.all([
+          invoke<{ data_url: string; width: number; height: number }>('parse_psd', { path: page.filePath }),
+          tauriReadFile(page.filePath),
+        ]);
+        if (cancelled) return;
+
+        const buffer = fileBytes.buffer as ArrayBuffer;
+        const layers = extractVisibleTextLayers(buffer);
+        const extractedText = combineTextForComparison(layers);
+
+        // 差分計算
+        const latestPage = textVerifyPagesRef.current[idx];
+        let computedDiff: TextVerifyPage['diffResult'] = null;
+        if (latestPage?.memoText) {
+          const normPsd = normalizeTextForComparison(extractedText);
+          const normMemo = normalizeTextForComparison(latestPage.memoText);
+          computedDiff = computeLineSetDiff(normPsd, normMemo);
+        }
+
+        if (cancelled) return;
+
+        setTextVerifyPages(prev => prev.map((p, i) =>
+          i === idx ? {
+            ...p,
+            imageSrc: imageResult.data_url,
+            extractedText,
+            extractedLayers: layers,
+            diffResult: computedDiff,
+            status: 'done' as const,
+          } : p
+        ));
+      } catch (err) {
+        if (cancelled) return;
+        console.error('Text verify processing error:', err);
+        setTextVerifyPages(prev => prev.map((p, i) =>
+          i === idx ? {
+            ...p,
+            status: 'error' as const,
+            errorMessage: String(err),
+          } : p
+        ));
+      }
+    };
+
+    const processAllPages = async () => {
+      // 現在のページを最優先で処理
+      await processPage(textVerifyCurrentIndex);
+      if (cancelled) return;
+
+      // 残りを並列バッチ処理（同時4ページ）
+      const CONCURRENCY = 4;
+      const rest = Array.from({ length: textVerifyPages.length }, (_, i) => i)
+        .filter(i => i !== textVerifyCurrentIndex);
+
+      for (let start = 0; start < rest.length; start += CONCURRENCY) {
+        if (cancelled) return;
+        const batch = rest.slice(start, start + CONCURRENCY);
+        await Promise.all(batch.map(idx => processPage(idx)));
+      }
+    };
+
+    processAllPages();
+    return () => { cancelled = true; };
+  }, [compareMode, textVerifyPages.length, textVerifyMemoRaw]);
+
+  // メモ変更時に差分を再計算
+  useEffect(() => {
+    if (compareMode !== 'text-verify') return;
+    setTextVerifyPages(prev => prev.map(page => {
+      if (page.status !== 'done' || !page.extractedText) return page;
+      let computedDiff: TextVerifyPage['diffResult'] = null;
+      if (page.memoText) {
+        const normPsd = normalizeTextForComparison(page.extractedText);
+        const normMemo = normalizeTextForComparison(page.memoText);
+        computedDiff = computeLineSetDiff(normPsd, normMemo);
+      }
+      return { ...page, diffResult: computedDiff };
+    }));
+  }, [textVerifyMemoRaw, compareMode]);
+
   // 全画面トランジション中フラグ（UI要素をCSSで収縮させる）
   const [fullscreenTransitioning, setFullscreenTransitioning] = useState(false);
 
@@ -2319,7 +2598,9 @@ export default function MangaDiffDetector() {
       // Ctrl+W: 開いているフォルダをクリア
       if (e.code === 'KeyW' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        if (appMode === 'diff-check') {
+        if (appMode === 'diff-check' && compareMode === 'text-verify') {
+          clearTextVerify();
+        } else if (appMode === 'diff-check') {
           setFilesA([]);
           setFilesB([]);
           setPairs([]);
@@ -2357,18 +2638,50 @@ export default function MangaDiffDetector() {
         return;
       }
 
-      // Vキー: モード切り替え
+      // Vキー: モード切り替え (diff-check ↔ parallel-view)
       if (e.code === 'KeyV' && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
         if (appMode === 'diff-check') {
-          // 差分モードから並列ビューモードへ切り替え時に状態を引き継ぐ
           transferDiffToParallelView();
           setAppMode('parallel-view');
-        } else {
+        } else if (appMode === 'parallel-view') {
           setAppMode('diff-check');
           setInitialModeSelect(false);
         }
         return;
+      }
+
+      // テキスト照合モードのキー操作
+      if (appMode === 'diff-check' && compareMode === 'text-verify') {
+        if (e.code === 'ArrowRight' || e.code === 'ArrowDown') {
+          e.preventDefault();
+          setTextVerifyCurrentIndex(prev => Math.min(prev + 1, textVerifyPages.length - 1));
+          return;
+        }
+        if (e.code === 'ArrowLeft' || e.code === 'ArrowUp') {
+          e.preventDefault();
+          setTextVerifyCurrentIndex(prev => Math.max(prev - 1, 0));
+          return;
+        }
+        if (e.code === 'Home') {
+          e.preventDefault();
+          setTextVerifyCurrentIndex(0);
+          return;
+        }
+        if (e.code === 'End') {
+          e.preventDefault();
+          setTextVerifyCurrentIndex(textVerifyPages.length - 1);
+          return;
+        }
+        // Pキー: Photoshopで開く
+        if (e.code === 'KeyP') {
+          const currentPage = textVerifyPages[textVerifyCurrentIndex];
+          if (currentPage?.filePath) {
+            e.preventDefault();
+            invoke('open_file_with_default_app', { path: currentPage.filePath });
+          }
+          return;
+        }
       }
 
       // 並列ビューモードのキー操作
@@ -2736,6 +3049,10 @@ export default function MangaDiffDetector() {
     setParallelFolderB(null);
     setDiffCache({});
     pdfCache.clear();
+    // テキスト照合モードのリセット
+    setTextVerifyPages([]);
+    setTextVerifyCurrentIndex(0);
+    setTextVerifyMemoRaw('');
   }, []);
 
   const handleClear = useCallback(() => {
@@ -2922,9 +3239,32 @@ export default function MangaDiffDetector() {
           fileListRef={fileListRef}
           pageListRef={pageListRef}
           parallelFileListRef={parallelFileListRef}
+          textVerifyPages={textVerifyPages}
+          textVerifyCurrentIndex={textVerifyCurrentIndex}
+          setTextVerifyCurrentIndex={setTextVerifyCurrentIndex}
+          textVerifyMemoRaw={textVerifyMemoRaw}
+          handleSelectTextVerifyFolder={handleSelectTextVerifyFolder}
+          handleSelectTextVerifyMemo={handleSelectTextVerifyMemo}
+          handlePasteTextVerifyMemo={handlePasteTextVerifyMemo}
+          clearTextVerify={clearTextVerify}
+          textVerifyFileListRef={textVerifyFileListRef}
         />
 
-        {appMode === 'diff-check' ? (
+        {appMode === 'diff-check' && compareMode === 'text-verify' ? (
+          <TextVerifyViewer
+            pages={textVerifyPages}
+            currentIndex={textVerifyCurrentIndex}
+            setCurrentIndex={setTextVerifyCurrentIndex}
+            memoRaw={textVerifyMemoRaw}
+            toggleFullscreen={toggleFullscreen}
+            onPasteMemo={applyTextVerifyMemo}
+            dropPsdRef={textVerifyDropPsdRef}
+            dropMemoRef={textVerifyDropMemoRef}
+            dragOverSide={dragOverSide}
+            onSelectFolder={handleSelectTextVerifyFolder}
+            onSelectMemo={handleSelectTextVerifyMemo}
+          />
+        ) : appMode === 'diff-check' ? (
           <DiffViewer
             isFullscreen={isFullscreen}
             fullscreenTransitioning={fullscreenTransitioning}
