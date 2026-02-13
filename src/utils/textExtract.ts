@@ -75,15 +75,37 @@ export function combineTextForComparison(layers: ExtractedTextLayer[]): string {
 }
 
 /**
+ * 日本語でよく混同される Unicode 文字を統一する
+ */
+function normalizeConfusables(text: string): string {
+  return text
+    // 波ダッシュ / チルダ系 → 〜 (U+301C)
+    .replace(/[\uFF5E\u223C\u223E]/g, '\u301C')
+    // ダッシュ / ハイフン系 → ー (U+30FC)
+    .replace(/[\u2014\u2015\u2012\u2013\uFF0D\u2500]/g, '\u30FC')
+    // 中黒系 → ・ (U+30FB)
+    .replace(/[\u2022\u2219\u00B7]/g, '\u30FB')
+    // 三点リーダ … (U+2026) → ・・・ ではなく統一記号として保持
+    // 全角スペース → 半角スペース
+    .replace(/\u3000/g, ' ')
+    // ゼロ幅文字・BOM・不可視文字を除去
+    .replace(/[\u200B\u200C\u200D\uFEFF\u00AD\u2060]/g, '')
+    // 全角英数 → 半角英数 (NFKC相当の部分適用)
+    .replace(/[\uFF01-\uFF5A]/g, c =>
+      String.fromCharCode(c.charCodeAt(0) - 0xFEE0)
+    );
+}
+
+/**
  * テキストを比較用に正規化する
+ * - 紛らわしい Unicode 文字の統一
  * - |（パイプ）を改行に変換（メモの改行マーカー）
  * - \r\n → \n 統一
- * - 連続空行を1つの改行に
  * - 各行の前後空白を除去
  * - 空行を除去
  */
 export function normalizeTextForComparison(text: string): string {
-  return text
+  return normalizeConfusables(text)
     .replace(/\|/g, '\n')           // | → 改行
     .replace(/\r\n/g, '\n')         // CRLF → LF
     .replace(/\r/g, '\n')           // CR → LF
@@ -337,6 +359,21 @@ export function buildUnifiedDiff(
     while (mi < mLines.length && mLines[mi].changed) {
       mDiff.push(mLines[mi].parts);
       mi++;
+    }
+
+    // 片方の非changed行が残っている場合（行数不一致の安全弁）
+    // → match として出力して進める
+    if (pDiff.length === 0 && mDiff.length === 0) {
+      if (pi < pLines.length && !pLines[pi].changed) {
+        result.push({ type: 'match', text: pLines[pi].parts.map(p => p.value).join('') });
+        pi++;
+        continue;
+      }
+      if (mi < mLines.length && !mLines[mi].changed) {
+        result.push({ type: 'match', text: mLines[mi].parts.map(p => p.value).join('') });
+        mi++;
+        continue;
+      }
     }
 
     // ペアごとに diff エントリを生成（fuzzy match は 1:1 ペア）

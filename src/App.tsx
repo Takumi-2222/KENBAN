@@ -17,7 +17,7 @@ import ParallelViewer from './components/ParallelViewer';
 import TextVerifyViewer from './components/TextVerifyViewer';
 import { extractVisibleTextLayers, combineTextForComparison, normalizeTextForComparison, computeLineSetDiff } from './utils/textExtract';
 import { parseMemo, matchPageToFile } from './utils/memoParser';
-import type { CompareMode, AppMode, FileWithPath, CropBounds, DiffMarker, FilePair, PageCache, ParallelFileEntry, ParallelImageCache, TextVerifyPage } from './types';
+import type { CompareMode, AppMode, FileWithPath, CropBounds, DiffMarker, FilePair, PageCache, ParallelFileEntry, ParallelImageCache, TextVerifyPage, ExtractedTextLayer } from './types';
 
 
 
@@ -2452,34 +2452,36 @@ export default function MangaDiffDetector() {
   useEffect(() => {
     if (compareMode !== 'text-verify') return;
     if (textVerifyPages.length === 0) return;
-    if (!textVerifyMemoRaw) return; // メモ未読込なら処理しない
+    if (!textVerifyMemoRaw) return;
 
     let cancelled = false;
 
-    const processPage = async (idx: number) => {
+    // テキスト抽出のみ（画像は取得しない — メモリ節約）
+    // PSD全体をJSに読み込むため、スコープを分離してGCを促進
+    const extractText = async (idx: number) => {
       if (cancelled) return;
       const latestPages = textVerifyPagesRef.current;
       const page = latestPages[idx];
       if (!page || page.status !== 'pending') return;
 
-      // loading状態に更新
       setTextVerifyPages(prev => prev.map((p, i) =>
         i === idx ? { ...p, status: 'loading' as const } : p
       ));
 
       try {
-        // 画像取得とテキスト抽出を並列実行
-        const [imageResult, fileBytes] = await Promise.all([
-          invoke<{ data_url: string; width: number; height: number }>('parse_psd', { path: page.filePath }),
-          tauriReadFile(page.filePath),
-        ]);
+        // PSDバッファのスコープを分離 — 関数抜けたら参照が切れてGC対象に
+        const { layers, extractedText } = await (async () => {
+          const fileBytes = await tauriReadFile(page.filePath);
+          if (cancelled) return { layers: [] as ExtractedTextLayer[], extractedText: '' };
+          const buffer = fileBytes.buffer as ArrayBuffer;
+          const l = extractVisibleTextLayers(buffer);
+          const t = combineTextForComparison(l);
+          return { layers: l, extractedText: t };
+        })();
+        // ここで fileBytes / buffer への参照は消える
+
         if (cancelled) return;
 
-        const buffer = fileBytes.buffer as ArrayBuffer;
-        const layers = extractVisibleTextLayers(buffer);
-        const extractedText = combineTextForComparison(layers);
-
-        // 差分計算
         const latestPage = textVerifyPagesRef.current[idx];
         let computedDiff: TextVerifyPage['diffResult'] = null;
         if (latestPage?.memoText) {
@@ -2493,7 +2495,6 @@ export default function MangaDiffDetector() {
         setTextVerifyPages(prev => prev.map((p, i) =>
           i === idx ? {
             ...p,
-            imageSrc: imageResult.data_url,
             extractedText,
             extractedLayers: layers,
             diffResult: computedDiff,
@@ -2504,35 +2505,92 @@ export default function MangaDiffDetector() {
         if (cancelled) return;
         console.error('Text verify processing error:', err);
         setTextVerifyPages(prev => prev.map((p, i) =>
-          i === idx ? {
-            ...p,
-            status: 'error' as const,
-            errorMessage: String(err),
-          } : p
+          i === idx ? { ...p, status: 'error' as const, errorMessage: String(err) } : p
         ));
       }
+
+      // GCにバッファ解放の猶予を与える
+      await new Promise(resolve => setTimeout(resolve, 50));
     };
 
     const processAllPages = async () => {
-      // 現在のページを最優先で処理
-      await processPage(textVerifyCurrentIndex);
+      // 現在ページ最優先
+      await extractText(textVerifyCurrentIndex);
       if (cancelled) return;
 
-      // 残りを並列バッチ処理（同時4ページ）
-      const CONCURRENCY = 4;
+      // 残りを逐次処理（並列だとメモリ溢れる）
       const rest = Array.from({ length: textVerifyPages.length }, (_, i) => i)
         .filter(i => i !== textVerifyCurrentIndex);
 
-      for (let start = 0; start < rest.length; start += CONCURRENCY) {
+      for (const idx of rest) {
         if (cancelled) return;
-        const batch = rest.slice(start, start + CONCURRENCY);
-        await Promise.all(batch.map(idx => processPage(idx)));
+        await extractText(idx);
       }
     };
 
     processAllPages();
     return () => { cancelled = true; };
   }, [compareMode, textVerifyPages.length, textVerifyMemoRaw]);
+
+  // 画像のオンデマンド取得 + プリフェッチ（±2ページ先読み）
+  const currentPageStatus = textVerifyPages[textVerifyCurrentIndex]?.status;
+  const currentPageHasImage = !!textVerifyPages[textVerifyCurrentIndex]?.imageSrc;
+  const parsePsdInFlightRef = useRef(false);
+
+  const fetchPreview = useCallback(async (idx: number): Promise<boolean> => {
+    const page = textVerifyPagesRef.current[idx];
+    if (!page || page.imageSrc || page.status !== 'done') return false;
+    try {
+      const result = await invoke<{ data_url: string; width: number; height: number }>('parse_psd_preview', { path: page.filePath, maxWidth: 1200 });
+      setTextVerifyPages(prev => prev.map((p, i) =>
+        i === idx ? { ...p, imageSrc: result.data_url } : p
+      ));
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (compareMode !== 'text-verify') return;
+    if (currentPageHasImage) return;
+    if (currentPageStatus !== 'done') return;
+
+    // デバウンス: 高速ページ送りで parse_psd が同時多発するのを防止
+    const timer = setTimeout(async () => {
+      if (parsePsdInFlightRef.current) return;
+
+      const targetIdx = textVerifyCurrentIndex;
+      const page = textVerifyPagesRef.current[targetIdx];
+      if (!page || page.imageSrc) return;
+
+      parsePsdInFlightRef.current = true;
+      try {
+        // 現在ページを取得
+        await fetchPreview(targetIdx);
+
+        // まだ同じページにいればプリフェッチ（±2ページ、1つずつ逐次）
+        const prefetchOrder = [targetIdx + 1, targetIdx - 1, targetIdx + 2, targetIdx - 2];
+        for (const pi of prefetchOrder) {
+          if (pi < 0 || pi >= textVerifyPagesRef.current.length) continue;
+          // ページ移動していたら中断
+          if (textVerifyCurrentIndex !== targetIdx) break;
+          await fetchPreview(pi);
+        }
+
+        // 遠いページの画像を解放（±3 以遠）
+        const currentIdx = textVerifyCurrentIndex;
+        setTextVerifyPages(prev => prev.map((p, i) => {
+          if (p.imageSrc && Math.abs(i - currentIdx) > 3) return { ...p, imageSrc: null };
+          return p;
+        }));
+      } finally {
+        parsePsdInFlightRef.current = false;
+      }
+    }, 150);
+
+    return () => clearTimeout(timer);
+  }, [textVerifyCurrentIndex, compareMode, currentPageStatus, currentPageHasImage, fetchPreview]);
 
   // メモ変更時に差分を再計算
   useEffect(() => {
@@ -3050,6 +3108,7 @@ export default function MangaDiffDetector() {
     setDiffCache({});
     pdfCache.clear();
     // テキスト照合モードのリセット
+    setCompareMode('tiff-tiff');
     setTextVerifyPages([]);
     setTextVerifyCurrentIndex(0);
     setTextVerifyMemoRaw('');

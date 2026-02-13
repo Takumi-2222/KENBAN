@@ -538,7 +538,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                       className="flex-1 border border-white/[0.06] bg-white/[0.02] rounded-xl py-4 px-6 flex items-center justify-center gap-3 transition-all cursor-pointer hover:border-green-400/30 hover:bg-[rgba(124,184,140,0.06)] group"
                     >
                       <PanelLeftClose size={24} className="text-neutral-500 group-hover:text-green-400 transition-colors" />
-                      <span className="text-lg font-semibold text-neutral-500 group-hover:text-green-400 transition-colors">分割ビューワー</span>
+                      <span className="text-lg font-semibold text-neutral-500 group-hover:text-green-400 transition-colors">分割ビューアー</span>
                     </button>
                   </div>
 

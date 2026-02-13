@@ -126,6 +126,60 @@ fn parse_psd(path: String) -> Result<PsdImageResult, String> {
     }
 }
 
+// PSDファイルを軽量プレビュー画像として返す（リサイズ + JPEG）
+// テキスト照合モード用 — フル解像度不要な場面で ~1/50 のメモリ・転送量
+#[tauri::command]
+fn parse_psd_preview(path: String, max_width: u32) -> Result<PsdImageResult, String> {
+    let bytes = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+
+    let img = {
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            let psd = Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {}", e))?;
+            let width = psd.width();
+            let height = psd.height();
+            let rgba = psd.rgba();
+            let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
+                ImageBuffer::from_raw(width, height, rgba)
+                    .ok_or_else(|| "Failed to create image buffer".to_string())?;
+            Ok::<DynamicImage, String>(DynamicImage::ImageRgba8(img_buf))
+        }));
+
+        match result {
+            Ok(Ok(img)) => img,
+            _ => decode_psd_fallback(&bytes)?,
+        }
+    };
+    // bytes はもう不要
+    drop(bytes);
+
+    let (orig_w, orig_h) = img.dimensions();
+
+    // リサイズ（max_width 以下にフィット、元が小さければそのまま）
+    let resized = if orig_w > max_width {
+        let new_h = (orig_h as f64 * max_width as f64 / orig_w as f64) as u32;
+        img.resize_exact(max_width, new_h, FilterType::Triangle)
+    } else {
+        img
+    };
+
+    let (w, h) = resized.dimensions();
+
+    // JPEG エンコード（RGBA→RGB変換 → JPEG 品質85）
+    let rgb_img = DynamicImage::ImageRgb8(resized.to_rgb8());
+    let mut jpeg_data = Cursor::new(Vec::new());
+    rgb_img.write_to(&mut jpeg_data, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
+
+    let base64_str = STANDARD.encode(jpeg_data.get_ref());
+    let data_url = format!("data:image/jpeg;base64,{}", base64_str);
+
+    Ok(PsdImageResult {
+        data_url,
+        width: w,
+        height: h,
+    })
+}
+
 // ファイルをシステムのデフォルトアプリで開く
 #[tauri::command]
 fn open_file_with_default_app(path: String) -> Result<(), String> {
@@ -1320,6 +1374,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             parse_psd,
+            parse_psd_preview,
             open_file_with_default_app,
             save_screenshot,
             open_folder,

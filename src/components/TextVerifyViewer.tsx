@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import {
   ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw,
   FileText, CheckCircle, AlertTriangle, Loader2,
@@ -105,7 +105,26 @@ export default function TextVerifyViewer({
 
   const diffCount = useMemo(() => unifiedEntries.filter(e => e.type === 'diff').length, [unifiedEntries]);
 
-  // 差分ナビゲーション
+  // 差分があるページのインデックスリスト（ページ横断ナビ用）
+  const diffPageIndices = useMemo(() => {
+    const indices: number[] = [];
+    for (let i = 0; i < pages.length; i++) {
+      const p = pages[i];
+      if (p.status === 'done' && p.diffResult &&
+        (p.diffResult.psd.some(d => d.removed) || p.diffResult.memo.some(d => d.added))) {
+        indices.push(i);
+      }
+    }
+    return indices;
+  }, [pages]);
+
+  // 全体での差分ページ数と現在位置
+  const globalDiffPos = useMemo(() => {
+    const idx = diffPageIndices.indexOf(currentIndex);
+    return { current: idx, total: diffPageIndices.length };
+  }, [diffPageIndices, currentIndex]);
+
+  // 差分ナビゲーション（ページ内スクロール）
   const scrollToDiff = useCallback((idx: number) => {
     const container = unifiedScrollRef.current;
     if (!container) return;
@@ -116,17 +135,56 @@ export default function TextVerifyViewer({
     }
   }, []);
 
+  // 次の差分へ（ページ内 → ページ横断）
   const goNextDiff = useCallback(() => {
-    if (diffCount === 0) return;
-    const next = currentDiffIdx < diffCount - 1 ? currentDiffIdx + 1 : 0;
-    scrollToDiff(next);
-  }, [currentDiffIdx, diffCount, scrollToDiff]);
+    // ページ内に次の差分があればそこへ
+    if (diffCount > 0 && currentDiffIdx < diffCount - 1) {
+      scrollToDiff(currentDiffIdx + 1);
+      return;
+    }
+    // 次の差分ページへ移動
+    const nextPage = diffPageIndices.find(i => i > currentIndex);
+    if (nextPage !== undefined) {
+      setCurrentIndex(nextPage);
+      setCurrentDiffIdx(0);
+    } else if (diffPageIndices.length > 0) {
+      // ラップアラウンド: 最初の差分ページへ
+      setCurrentIndex(diffPageIndices[0]);
+      setCurrentDiffIdx(0);
+    }
+  }, [currentDiffIdx, diffCount, scrollToDiff, diffPageIndices, currentIndex, setCurrentIndex]);
 
+  // 前の差分へ（ページ内 → ページ横断）
   const goPrevDiff = useCallback(() => {
-    if (diffCount === 0) return;
-    const prev = currentDiffIdx > 0 ? currentDiffIdx - 1 : diffCount - 1;
-    scrollToDiff(prev);
-  }, [currentDiffIdx, diffCount, scrollToDiff]);
+    // ページ内に前の差分があればそこへ
+    if (diffCount > 0 && currentDiffIdx > 0) {
+      scrollToDiff(currentDiffIdx - 1);
+      return;
+    }
+    // 前の差分ページへ移動（最後の差分にフォーカス）
+    const prevPages = diffPageIndices.filter(i => i < currentIndex);
+    if (prevPages.length > 0) {
+      setCurrentIndex(prevPages[prevPages.length - 1]);
+      setCurrentDiffIdx(-1); // -1 = 最後の差分（レンダー後にスクロール）
+    } else if (diffPageIndices.length > 0) {
+      // ラップアラウンド: 最後の差分ページへ
+      setCurrentIndex(diffPageIndices[diffPageIndices.length - 1]);
+      setCurrentDiffIdx(-1);
+    }
+  }, [currentDiffIdx, diffCount, scrollToDiff, diffPageIndices, currentIndex, setCurrentIndex]);
+
+  // ページ切替後に差分位置へスクロール（-1 = 最後の差分）
+  useEffect(() => {
+    if (currentDiffIdx === -1 && diffCount > 0) {
+      // 少し遅延してDOMレンダー完了後にスクロール
+      const timer = setTimeout(() => scrollToDiff(diffCount - 1), 50);
+      return () => clearTimeout(timer);
+    }
+    if (currentDiffIdx === 0 && diffCount > 0) {
+      const timer = setTimeout(() => scrollToDiff(0), 50);
+      return () => clearTimeout(timer);
+    }
+  }, [diffCount, currentDiffIdx, scrollToDiff]);
 
   // zoom/pan ハンドラ
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -157,6 +215,7 @@ export default function TextVerifyViewer({
       setCurrentIndex(prev => (typeof prev === 'number' ? prev + 1 : prev));
       setZoom(1);
       setPanPosition({ x: 0, y: 0 });
+      setCurrentDiffIdx(0);
     }
   }, [currentIndex, pages.length, setCurrentIndex]);
 
@@ -165,6 +224,7 @@ export default function TextVerifyViewer({
       setCurrentIndex(prev => (typeof prev === 'number' ? prev - 1 : prev));
       setZoom(1);
       setPanPosition({ x: 0, y: 0 });
+      setCurrentDiffIdx(0);
     }
   }, [currentIndex, setCurrentIndex]);
 
@@ -245,39 +305,50 @@ export default function TextVerifyViewer({
   // 空state — ドロップゾーン
   if (pages.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center">
-        <div className="flex flex-col items-center w-full max-w-3xl px-8">
-          <Type size={48} className="mb-4 opacity-20 text-neutral-600" />
-          <p className="text-neutral-600 mb-6">PSDフォルダとテキストメモをドロップして照合を開始</p>
+      <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center w-full max-w-3xl px-8">
+            <Type size={48} className="mb-4 opacity-20 text-neutral-600" />
+            <p className="text-neutral-600 mb-6">PSDフォルダとテキストメモをドロップして照合を開始</p>
 
-          <div className="flex gap-4 w-full">
-            <div
-              ref={dropPsdRef}
-              onClick={onSelectFolder}
-              className={`flex-1 border border-dashed rounded-xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${
-                dragOverSide === 'textVerifyPsd'
-                  ? 'border-teal-400/50 bg-teal-900/15 scale-[1.02]'
-                  : 'border-white/[0.08] hover:border-white/[0.15] hover:bg-white/[0.02]'
-              }`}
-            >
-              <FolderOpen size={36} className={`mb-3 ${dragOverSide === 'textVerifyPsd' ? 'text-teal-400' : 'text-neutral-600'}`} />
-              <p className={`text-sm font-medium ${dragOverSide === 'textVerifyPsd' ? 'text-teal-300' : 'text-neutral-500'}`}>PSDフォルダ</p>
-              <p className="text-xs text-neutral-600 mt-1">.psd</p>
-            </div>
+            <div className="flex gap-4 w-full">
+              <div
+                ref={dropPsdRef}
+                onClick={onSelectFolder}
+                className={`flex-1 border border-dashed rounded-xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${
+                  dragOverSide === 'textVerifyPsd'
+                    ? 'border-teal-400/50 bg-teal-900/15 scale-[1.02]'
+                    : 'border-white/[0.08] hover:border-white/[0.15] hover:bg-white/[0.02]'
+                }`}
+              >
+                <FolderOpen size={36} className={`mb-3 ${dragOverSide === 'textVerifyPsd' ? 'text-teal-400' : 'text-neutral-600'}`} />
+                <p className={`text-sm font-medium ${dragOverSide === 'textVerifyPsd' ? 'text-teal-300' : 'text-neutral-500'}`}>PSDフォルダ</p>
+                <p className="text-xs text-neutral-600 mt-1">.psd</p>
+              </div>
 
-            <div
-              ref={dropMemoRef}
-              onClick={onSelectMemo}
-              className={`flex-1 border border-dashed rounded-xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${
-                dragOverSide === 'textVerifyMemo'
-                  ? 'border-teal-400/50 bg-teal-900/15 scale-[1.02]'
-                  : 'border-white/[0.08] hover:border-white/[0.15] hover:bg-white/[0.02]'
-              }`}
-            >
-              <FileText size={36} className={`mb-3 ${dragOverSide === 'textVerifyMemo' ? 'text-teal-400' : 'text-neutral-600'}`} />
-              <p className={`text-sm font-medium ${dragOverSide === 'textVerifyMemo' ? 'text-teal-300' : 'text-neutral-500'}`}>テキストメモ</p>
-              <p className="text-xs text-neutral-600 mt-1">.txt</p>
+              <div
+                ref={dropMemoRef}
+                onClick={onSelectMemo}
+                className={`flex-1 border border-dashed rounded-xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${
+                  dragOverSide === 'textVerifyMemo'
+                    ? 'border-teal-400/50 bg-teal-900/15 scale-[1.02]'
+                    : 'border-white/[0.08] hover:border-white/[0.15] hover:bg-white/[0.02]'
+                }`}
+              >
+                <FileText size={36} className={`mb-3 ${dragOverSide === 'textVerifyMemo' ? 'text-teal-400' : 'text-neutral-600'}`} />
+                <p className={`text-sm font-medium ${dragOverSide === 'textVerifyMemo' ? 'text-teal-300' : 'text-neutral-500'}`}>テキストメモ</p>
+                <p className="text-xs text-neutral-600 mt-1">.txt</p>
+              </div>
             </div>
+          </div>
+        </div>
+        {/* ステータスバー */}
+        <div className="bg-neutral-900 border-t border-white/[0.06] flex items-center px-4 text-xs text-neutral-600 justify-between shrink-0 h-8">
+          <div />
+          <div className="flex items-center gap-3">
+            <span className="px-2 py-0.5 rounded-md bg-[rgba(108,168,168,0.08)] text-teal-400">
+              PSD-TEXT
+            </span>
           </div>
         </div>
       </div>
@@ -411,10 +482,29 @@ export default function TextVerifyViewer({
             </div>
           )}
         </div>
+
+        {/* ステータスバー（画像未読込時のみ） */}
+        {!currentPage?.imageSrc && (
+          <div className="bg-neutral-900 border-t border-white/[0.06] flex items-center px-4 text-xs text-neutral-600 justify-between shrink-0 h-8">
+            <div className="flex items-center gap-3">
+              {currentPage && (
+                <>
+                  <span>#{currentIndex + 1}</span>
+                  <span className="text-neutral-500 truncate max-w-[200px]">{currentPage.fileName}</span>
+                </>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="px-2 py-0.5 rounded-md bg-[rgba(108,168,168,0.08)] text-teal-400">
+                PSD-TEXT
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* テキスト照合パネル（右側 — Editorial Proofing） */}
-      <div className="tv-panel w-[420px] shrink-0 flex flex-col overflow-hidden"
+      <div className="tv-panel w-[420px] shrink-0 flex flex-col overflow-hidden select-text"
         style={{ background: 'var(--tv-paper)', borderLeft: '1px solid var(--tv-rule-strong)' }}
       >
           {/* アクセントライン */}
@@ -493,52 +583,57 @@ export default function TextVerifyViewer({
             <div className="flex-1 flex flex-col overflow-hidden">
 
               {/* ツールバー: ビュー切替 + レイヤー詳細 + 差分ナビ */}
-              <div className="px-4 py-1.5 flex items-center gap-2 shrink-0"
+              <div className="px-3 py-1.5 flex items-center gap-3 shrink-0"
                 style={{ background: 'var(--tv-header)', borderBottom: '1px solid var(--tv-rule)' }}
               >
-                {/* ビュー切替 */}
-                <div className="flex rounded overflow-hidden" style={{ border: '1px solid var(--tv-rule)' }}>
+                {/* セグメントコントロール */}
+                <div className="flex items-center gap-0.5 p-0.5 rounded-lg"
+                  style={{ background: 'rgba(255,255,255,0.04)' }}
+                >
+                  {([
+                    { key: 'unified' as const, icon: <Merge size={11} />, label: '統合' },
+                    { key: 'split' as const, icon: <SplitSquareVertical size={11} />, label: '分割' },
+                  ] as const).map(tab => {
+                    const isActive = viewMode === tab.key;
+                    return (
+                      <button
+                        key={tab.key}
+                        onClick={() => setViewMode(tab.key)}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-medium tracking-wide transition-all duration-150"
+                        style={{
+                          background: isActive ? 'var(--tv-accent-wash)' : 'transparent',
+                          color: isActive ? 'var(--tv-accent)' : 'var(--tv-ink-tertiary)',
+                          boxShadow: isActive ? '0 1px 3px rgba(0,0,0,0.15)' : 'none',
+                        }}
+                      >
+                        {tab.icon}
+                        {tab.label}
+                      </button>
+                    );
+                  })}
+
+                  {/* セパレータ */}
+                  <div className="w-px h-3 mx-0.5" style={{ background: 'var(--tv-rule)' }} />
+
+                  {/* レイヤー詳細トグル */}
                   <button
-                    onClick={() => setViewMode('unified')}
-                    className="p-1 transition-colors duration-100"
+                    onClick={() => setShowLayers(!showLayers)}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-medium tracking-wide transition-all duration-150"
                     style={{
-                      background: viewMode === 'unified' ? 'var(--tv-accent-wash)' : 'transparent',
-                      color: viewMode === 'unified' ? 'var(--tv-accent)' : 'var(--tv-ink-tertiary)',
+                      background: showLayers ? 'var(--tv-accent-wash)' : 'transparent',
+                      color: showLayers ? 'var(--tv-accent)' : 'var(--tv-ink-tertiary)',
+                      boxShadow: showLayers ? '0 1px 3px rgba(0,0,0,0.15)' : 'none',
                     }}
-                    title="統合ビュー"
                   >
-                    <Merge size={12} />
-                  </button>
-                  <button
-                    onClick={() => setViewMode('split')}
-                    className="p-1 transition-colors duration-100"
-                    style={{
-                      background: viewMode === 'split' ? 'var(--tv-accent-wash)' : 'transparent',
-                      color: viewMode === 'split' ? 'var(--tv-accent)' : 'var(--tv-ink-tertiary)',
-                      borderLeft: '1px solid var(--tv-rule)',
-                    }}
-                    title="分割ビュー"
-                  >
-                    <SplitSquareVertical size={12} />
+                    <Type size={11} />
+                    レイヤー
                   </button>
                 </div>
 
-                {/* レイヤー詳細トグル */}
-                <button
-                  onClick={() => setShowLayers(!showLayers)}
-                  className="text-[10px] px-2 py-0.5 rounded transition-colors duration-150"
-                  style={{
-                    color: showLayers ? 'var(--tv-accent)' : 'var(--tv-ink-tertiary)',
-                    background: showLayers ? 'var(--tv-accent-wash)' : 'transparent',
-                  }}
-                >
-                  レイヤー
-                </button>
-
                 <div className="flex-1" />
 
-                {/* 差分ナビゲーション */}
-                {diffCount > 0 && (
+                {/* 差分ナビゲーション（ページ横断） */}
+                {diffPageIndices.length > 0 && (
                   <div className="flex items-center gap-1">
                     <button onClick={goPrevDiff} className="p-0.5 rounded transition-colors"
                       style={{ color: 'var(--tv-ink-tertiary)' }}
@@ -546,10 +641,14 @@ export default function TextVerifyViewer({
                     >
                       <ArrowUp size={12} />
                     </button>
-                    <span className="text-[10px] min-w-[36px] text-center"
+                    <span className="text-[10px] min-w-[48px] text-center"
                       style={{ color: 'var(--tv-ink-secondary)' }}
+                      title={`差分: ${diffPageIndices.length}ページ`}
                     >
-                      {currentDiffIdx + 1}/{diffCount}
+                      {globalDiffPos.current >= 0
+                        ? `${globalDiffPos.current + 1}/${globalDiffPos.total}`
+                        : `- /${globalDiffPos.total}`
+                      }
                     </span>
                     <button onClick={goNextDiff} className="p-0.5 rounded transition-colors"
                       style={{ color: 'var(--tv-ink-tertiary)' }}
@@ -644,33 +743,47 @@ export default function TextVerifyViewer({
                             <div
                               key={i}
                               data-diff-idx={idx}
-                              className="my-1 rounded-md overflow-hidden transition-shadow duration-200"
+                              className="my-1 rounded-md overflow-hidden transition-all duration-200"
                               style={{
-                                background: 'var(--tv-paper-warm)',
-                                border: `1px solid ${isCurrent ? 'var(--tv-accent)' : 'var(--tv-rule)'}`,
-                                boxShadow: isCurrent ? '0 0 0 1px var(--tv-accent)' : undefined,
+                                background: isCurrent ? 'rgba(210,170,80,0.10)' : 'var(--tv-paper-warm)',
+                                border: `1px solid ${isCurrent ? 'rgba(200,160,60,0.5)' : 'var(--tv-rule)'}`,
+                                boxShadow: isCurrent ? '0 0 0 1px rgba(200,160,60,0.35), 0 1px 4px rgba(200,160,60,0.12)' : undefined,
                               }}
                             >
+                              {/* 両方に存在するが文字差異がある場合のヘッダー */}
+                              {entry.psdParts && entry.memoParts && (
+                                <div className="px-2.5 pt-1 pb-0"
+                                  style={{ borderBottom: '1px solid var(--tv-rule)' }}
+                                >
+                                  <span className="text-[9px] font-semibold tracking-wide select-none"
+                                    style={{ color: 'var(--tv-ink-tertiary)' }}
+                                  >文字差分あり</span>
+                                </div>
+                              )}
                               {entry.psdParts && (
                                 <div className="px-2.5 py-1 whitespace-pre-wrap break-all"
-                                  style={{ borderLeft: '3px solid rgba(194,90,90,0.5)' }}
                                 >
                                   {entry.psdParts.map((p, pi) =>
                                     p.removed
                                       ? <span key={pi} style={{ background: 'rgba(194,90,90,0.18)', color: '#8a2020', borderRadius: '2px', padding: '0 2px' }}>{p.value}</span>
                                       : <span key={pi}>{p.value}</span>
                                   )}
+                                  <span className="inline-block text-[9px] font-semibold tracking-wide select-none ml-1.5 align-baseline"
+                                    style={{ color: 'rgba(160,70,70,0.55)' }}
+                                  >{entry.memoParts ? 'PSD' : 'PSDのみ'}</span>
                                 </div>
                               )}
                               {entry.memoParts && (
                                 <div className="px-2.5 py-1 whitespace-pre-wrap break-all"
-                                  style={{ borderLeft: '3px solid rgba(60,150,80,0.45)' }}
                                 >
                                   {entry.memoParts.map((p, mi) =>
                                     p.added
                                       ? <span key={mi} style={{ background: 'rgba(60,150,80,0.16)', color: '#1a6030', borderRadius: '2px', padding: '0 2px' }}>{p.value}</span>
                                       : <span key={mi}>{p.value}</span>
                                   )}
+                                  <span className="inline-block text-[9px] font-semibold tracking-wide select-none ml-1.5 align-baseline"
+                                    style={{ color: 'rgba(50,130,70,0.55)' }}
+                                  >{entry.psdParts ? 'メモ' : 'メモのみ'}</span>
                                 </div>
                               )}
                             </div>
