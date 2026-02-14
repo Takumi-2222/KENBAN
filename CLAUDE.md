@@ -16,8 +16,11 @@ Tauri 2 + React + TypeScript + Rust で構成。
 - `src/components/Sidebar.tsx` - サイドバー（モード切替、ファイルリスト）
 - `src/components/DiffViewer.tsx` - 差分ビューアー（ツールバー、ドロップゾーン、ビューア）
 - `src/components/ParallelViewer.tsx` - 並列ビューアー
+- `src/components/TextVerifyViewer.tsx` - テキスト照合ビューアー（PSD↔メモ差分、統合/分割/画像ビュー）
 - `src/components/GDriveFolderBrowser.tsx` - Google Driveブラウザモーダル
 - `src/components/ScreenshotEditor.tsx` - スクリーンショット指示エディタ
+- `src/utils/textExtract.ts` - PSDテキスト抽出、差分計算（行セットマッチング、チャンク区切り）
+- `src/utils/memoParser.ts` - メモテキストのページ分割・`<<X,YPage>>`パターン解析
 - `src/index.css` - Tailwind CSS v4 @theme カラートークン、フォント、スクロールバー
 - `src/App.css` - フルスクリーンアニメーション、ベーススタイル
 - `src-tauri/src/lib.rs` - Rustバックエンド（Tauriコマンド）
@@ -32,15 +35,17 @@ cargo check            # Rustのみコンパイルチェック（src-tauri/内�
 ```
 
 ## バージョン管理
-バージョンは以下の2箇所を同時に更新する:
+バージョンは以下の3箇所を同時に更新する:
 - `package.json` の `version`
 - `src-tauri/tauri.conf.json` の `version`
+- `src-tauri/Cargo.toml` の `version`
 
 ## 比較モード
 - **tiff-tiff**: TIFF同士の比較（シンプル差分）
 - **psd-psd**: PSD同士の比較（シンプル差分）
 - **pdf-pdf**: PDF同士の比較（ページ単位、JS側で差分計算）
 - **psd-tiff (混合)**: PSD→TIFF出力の検証（ヒートマップ差分、JSON cropBounds必要）
+- **テキスト照合**: PSDテキストレイヤーとメモテキストの写植照合
 
 ## Rustコマンド (invoke)
 - `parse_psd` - PSDファイルのデコード
@@ -95,6 +100,15 @@ cargo check            # Rustのみコンパイルチェック（src-tauri/内�
    - ZIP圧縮は未対応（エラー表示で止まる、クラッシュはしない）
 
 対象関数: `parse_psd` (並列ビュー表示用) / `decode_psd_to_image` (差分比較用)
+
+## テキスト照合アーキテクチャ
+- `extractVisibleTextLayers` (ag-psd) → レイヤー単位テキスト抽出 → マンガ読み順ソート
+- `combineTextForComparison` でレイヤー間を `\n\n` 結合（チャンク境界）
+- `normalizeTextForComparison(text, preserveChunks?)` で正規化。`preserveChunks=true` 時、空行を `CHUNK_BREAK` (U+2063) に変換
+- `computeLineSetDiff` / `computeSharedGroupDiff` で行セットマッチング（完全一致→ファジーマッチ）
+- `buildUnifiedDiff` で統合ビュー用エントリ生成（match / diff / linebreak / separator）
+- `postProcessChunkBreaks` で CHUNK_BREAK → separator エントリ変換
+- `layerDiffMap` (TextVerifyViewer) でPSD画像上のSVGハイライト位置計算
 
 ## 注意事項
 - App.tsx が巨大なので編集時は行番号を確認すること
