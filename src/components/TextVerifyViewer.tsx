@@ -40,8 +40,7 @@ export default function TextVerifyViewer({
   const [zoom, setZoom] = useState(1);
   const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
-  const [showLayers, setShowLayers] = useState(false);
-  const [viewMode, setViewMode] = useState<'split' | 'unified'>('unified');
+  const [viewMode, setViewMode] = useState<'unified' | 'split' | 'layers'>('unified');
   const [currentDiffIdx, setCurrentDiffIdx] = useState(0);
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const imageContainerRef = useRef<HTMLDivElement>(null);
@@ -514,10 +513,15 @@ export default function TextVerifyViewer({
           <div className="px-4 py-2.5 flex items-center justify-between shrink-0"
             style={{ background: 'var(--tv-header)', borderBottom: '1px solid var(--tv-rule)' }}
           >
-            <span className="text-[11px] font-semibold tracking-wider"
-              style={{ color: 'var(--tv-accent)' }}
-            >
-              テキスト照合
+            <span className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold tracking-wider"
+                style={{ color: 'var(--tv-accent)' }}
+              >テキスト照合</span>
+              {pages.length > 0 && (
+                <span className="text-[10px] tabular-nums"
+                  style={{ color: 'var(--tv-ink-tertiary)' }}
+                >P{currentIndex + 1}</span>
+              )}
             </span>
             {stats.total > 0 && (
               <div className="flex items-center gap-3 text-[10px]">
@@ -615,14 +619,14 @@ export default function TextVerifyViewer({
                   {/* セパレータ */}
                   <div className="w-px h-3 mx-0.5" style={{ background: 'var(--tv-rule)' }} />
 
-                  {/* レイヤー詳細トグル */}
+                  {/* レイヤー詳細 */}
                   <button
-                    onClick={() => setShowLayers(!showLayers)}
+                    onClick={() => setViewMode('layers')}
                     className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-medium tracking-wide transition-all duration-150"
                     style={{
-                      background: showLayers ? 'var(--tv-accent-wash)' : 'transparent',
-                      color: showLayers ? 'var(--tv-accent)' : 'var(--tv-ink-tertiary)',
-                      boxShadow: showLayers ? '0 1px 3px rgba(0,0,0,0.15)' : 'none',
+                      background: viewMode === 'layers' ? 'var(--tv-accent-wash)' : 'transparent',
+                      color: viewMode === 'layers' ? 'var(--tv-accent)' : 'var(--tv-ink-tertiary)',
+                      boxShadow: viewMode === 'layers' ? '0 1px 3px rgba(0,0,0,0.15)' : 'none',
                     }}
                   >
                     <Type size={11} />
@@ -632,27 +636,51 @@ export default function TextVerifyViewer({
 
                 <div className="flex-1" />
 
-                {/* 差分ナビゲーション（ページ横断） */}
-                {diffPageIndices.length > 0 && (
-                  <div className="flex items-center gap-1">
-                    <button onClick={goPrevDiff} className="p-0.5 rounded transition-colors"
+                {/* 差分ナビゲーション（統合ビューのみ） */}
+                {viewMode === 'unified' && diffPageIndices.length > 0 && (
+                  <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg"
+                    style={{
+                      background: 'var(--tv-paper-warm)',
+                      border: '1px solid var(--tv-rule)',
+                    }}
+                  >
+                    <span className="inline-flex h-1.5 w-1.5 rounded-full shrink-0"
+                      style={{ background: '#b84040' }}
+                    />
+                    <span className="text-[10px] font-semibold tracking-wide"
+                      style={{ color: 'var(--tv-ink-tertiary)' }}
+                    >差分</span>
+
+                    <div className="w-px h-3" style={{ background: 'var(--tv-rule-strong)' }} />
+
+                    <span className="text-[11px] font-semibold min-w-[28px] text-center tabular-nums"
+                      style={{ color: 'var(--tv-ink-secondary)' }}
+                    >
+                      {globalDiffPos.current >= 0
+                        ? <>{globalDiffPos.current + 1}<span style={{ color: 'var(--tv-ink-tertiary)', margin: '0 1px' }}>/</span>{globalDiffPos.total}</>
+                        : <>—<span style={{ color: 'var(--tv-ink-tertiary)', margin: '0 1px' }}>/</span>{globalDiffPos.total}</>
+                      }
+                    </span>
+
+                    <div className="w-px h-3" style={{ background: 'var(--tv-rule-strong)' }} />
+
+                    <button
+                      onClick={goPrevDiff}
+                      className="p-0.5 rounded transition-all duration-150"
                       style={{ color: 'var(--tv-ink-tertiary)' }}
                       title="前の差分"
+                      onMouseEnter={e => { e.currentTarget.style.color = 'var(--tv-accent)'; e.currentTarget.style.background = 'var(--tv-accent-wash)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.color = 'var(--tv-ink-tertiary)'; e.currentTarget.style.background = 'transparent'; }}
                     >
                       <ArrowUp size={12} />
                     </button>
-                    <span className="text-[10px] min-w-[48px] text-center"
-                      style={{ color: 'var(--tv-ink-secondary)' }}
-                      title={`差分: ${diffPageIndices.length}ページ`}
-                    >
-                      {globalDiffPos.current >= 0
-                        ? `${globalDiffPos.current + 1}/${globalDiffPos.total}`
-                        : `- /${globalDiffPos.total}`
-                      }
-                    </span>
-                    <button onClick={goNextDiff} className="p-0.5 rounded transition-colors"
+                    <button
+                      onClick={goNextDiff}
+                      className="p-0.5 rounded transition-all duration-150"
                       style={{ color: 'var(--tv-ink-tertiary)' }}
                       title="次の差分"
+                      onMouseEnter={e => { e.currentTarget.style.color = 'var(--tv-accent)'; e.currentTarget.style.background = 'var(--tv-accent-wash)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.color = 'var(--tv-ink-tertiary)'; e.currentTarget.style.background = 'transparent'; }}
                     >
                       <ArrowDown size={12} />
                     </button>
@@ -661,7 +689,7 @@ export default function TextVerifyViewer({
               </div>
 
               {/* レイヤー詳細表示 */}
-              {showLayers ? (
+              {viewMode === 'layers' ? (
                 <div className="flex-1 overflow-y-auto px-4 py-3">
                   {currentPage.status === 'loading' ? (
                     <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--tv-ink-tertiary)' }}>
@@ -684,12 +712,10 @@ export default function TextVerifyViewer({
                               borderLeft: hasLayerDiff ? '3px solid rgba(194,90,90,0.5)' : allInMemo ? '3px solid rgba(60,150,80,0.4)' : undefined,
                             }}
                           >
-                            <div className="flex items-center gap-1.5 mb-1.5">
-                              <span className="text-[10px] truncate flex-1" style={{ color: 'var(--tv-ink-tertiary)' }}>{layer.layerName}</span>
-                              {allInMemo && <CheckCircle size={10} style={{ color: 'rgba(60,150,80,0.7)' }} />}
-                              {hasLayerDiff && <AlertTriangle size={10} style={{ color: 'rgba(194,90,90,0.7)' }} />}
-                            </div>
-                            <div className="text-[13px] whitespace-pre-wrap break-all leading-[1.8]"
+                            <div className="flex items-start gap-1.5">
+                              {hasLayerDiff && <AlertTriangle size={10} className="shrink-0 mt-1.5" style={{ color: 'rgba(194,90,90,0.7)' }} />}
+                              {allInMemo && <CheckCircle size={10} className="shrink-0 mt-1.5" style={{ color: 'rgba(60,150,80,0.7)' }} />}
+                            <div className="flex-1 text-[13px] whitespace-pre-wrap break-all leading-[1.8]"
                               style={{ color: 'var(--tv-ink)' }}
                             >
                               {memoLinesSet.size > 0
@@ -705,6 +731,7 @@ export default function TextVerifyViewer({
                                     );
                                   })
                                 : layer.text}
+                            </div>
                             </div>
                           </div>
                         );
@@ -755,9 +782,9 @@ export default function TextVerifyViewer({
                                 <div className="px-2.5 pt-1 pb-0"
                                   style={{ borderBottom: '1px solid var(--tv-rule)' }}
                                 >
-                                  <span className="text-[9px] font-semibold tracking-wide select-none"
+                                  <span className="flex items-center gap-1 text-[9px] font-semibold tracking-wide select-none"
                                     style={{ color: 'var(--tv-ink-tertiary)' }}
-                                  >文字差分あり</span>
+                                  ><AlertTriangle size={10} className="text-red-400" />文字差分あり</span>
                                 </div>
                               )}
                               {entry.psdParts && (
@@ -768,9 +795,9 @@ export default function TextVerifyViewer({
                                       ? <span key={pi} style={{ background: 'rgba(194,90,90,0.18)', color: '#8a2020', borderRadius: '2px', padding: '0 2px' }}>{p.value}</span>
                                       : <span key={pi}>{p.value}</span>
                                   )}
-                                  <span className="inline-block text-[9px] font-semibold tracking-wide select-none ml-1.5 align-baseline"
+                                  <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold tracking-wide select-none ml-1.5 align-baseline"
                                     style={{ color: 'rgba(160,70,70,0.55)' }}
-                                  >{entry.memoParts ? 'PSD' : 'PSDのみ'}</span>
+                                  >{!entry.memoParts && <AlertTriangle size={9} className="text-red-400" />}{entry.memoParts ? 'PSD' : 'PSDのみ'}</span>
                                 </div>
                               )}
                               {entry.memoParts && (
@@ -781,9 +808,9 @@ export default function TextVerifyViewer({
                                       ? <span key={mi} style={{ background: 'rgba(60,150,80,0.16)', color: '#1a6030', borderRadius: '2px', padding: '0 2px' }}>{p.value}</span>
                                       : <span key={mi}>{p.value}</span>
                                   )}
-                                  <span className="inline-block text-[9px] font-semibold tracking-wide select-none ml-1.5 align-baseline"
+                                  <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold tracking-wide select-none ml-1.5 align-baseline"
                                     style={{ color: 'rgba(50,130,70,0.55)' }}
-                                  >{entry.psdParts ? 'メモ' : 'メモのみ'}</span>
+                                  >{!entry.psdParts && <AlertTriangle size={9} className="text-red-400" />}{entry.psdParts ? 'メモ' : 'メモのみ'}</span>
                                 </div>
                               )}
                             </div>
@@ -836,6 +863,7 @@ export default function TextVerifyViewer({
               )}
             </div>
           )}
+
         </div>
     </div>
   );
