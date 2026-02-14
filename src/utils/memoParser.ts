@@ -4,11 +4,23 @@
 interface DelimiterPattern {
   regex: RegExp;
   extractPage: (match: RegExpMatchArray) => number;
+  extractPages?: (match: RegExpMatchArray) => number[];  // 複数ページ区切り
   sequential?: boolean; // true = ページ番号なし、出現順に連番
+}
+
+export interface ParsedMemo {
+  pages: Map<number, string>;
+  sharedPages: Map<number, number[]>;  // pageNum → そのセクションの全ページ番号リスト
 }
 
 // ページ区切りパターン（優先順）
 const DELIMITER_PATTERNS: DelimiterPattern[] = [
+  // <<1,2Page>>, <<3,4Page>> — クリスタ export形式（2ページ単位）
+  {
+    regex: /^<<\s*(\d{1,4})\s*,\s*(\d{1,4})\s*(?:Page|[Pp]age|[Pp])?\s*>>\s*$/m,
+    extractPage: m => parseInt(m[1], 10),
+    extractPages: m => [parseInt(m[1], 10), parseInt(m[2], 10)],
+  },
   // <<2Page>>, <<2>>, << 2Page >>, <<2P>>
   { regex: /^<<\s*(\d{1,4})\s*(?:Page|[Pp]age|[Pp])?\s*>>\s*$/m, extractPage: m => parseInt(m[1], 10) },
   // [1巻18P], [第3話5P] — COMIC-POT/COMIC-Bridge形式 (プレフィクス+ページ番号)
@@ -34,7 +46,7 @@ const DELIMITER_PATTERNS: DelimiterPattern[] = [
 /**
  * テキストメモを解析してページ番号→テキストのマップを返す
  */
-export function parseMemo(text: string): Map<number, string> {
+export function parseMemo(text: string): ParsedMemo {
   // COMIC-POT/COMIC-Bridgeヘッダー行を除去
   const cleaned = text.replace(/^\[COMIC-POT:[^\]]*\]\s*\n?/m, '');
 
@@ -45,7 +57,7 @@ export function parseMemo(text: string): Map<number, string> {
   }
 
   // フォールバック: 空行2連続で区切り
-  return splitByDoubleNewline(cleaned);
+  return { pages: splitByDoubleNewline(cleaned), sharedPages: new Map() };
 }
 
 /**
@@ -76,12 +88,13 @@ export function detectDelimiterPattern(text: string): DelimiterPattern | null {
 /**
  * 検出したパターンでテキストを分割する
  */
-function splitByPattern(text: string, pattern: DelimiterPattern): Map<number, string> {
+function splitByPattern(text: string, pattern: DelimiterPattern): ParsedMemo {
   const result = new Map<number, string>();
+  const sharedPages = new Map<number, number[]>();
   const globalRegex = new RegExp(pattern.regex.source, 'gm');
   const matches = [...text.matchAll(globalRegex)];
 
-  if (matches.length === 0) return result;
+  if (matches.length === 0) return { pages: result, sharedPages };
 
   // 最初のデリミタの前にテキストがあれば追加
   const preText = text.slice(0, matches[0].index!).trim();
@@ -98,16 +111,27 @@ function splitByPattern(text: string, pattern: DelimiterPattern): Map<number, st
 
   for (let i = 0; i < matches.length; i++) {
     const match = matches[i];
-    // 連番モード: preTextがあれば2から、なければ1から
-    const pageNum = pattern.sequential ? i + 1 + (hasPreText ? 1 : 0) : pattern.extractPage(match);
     const startPos = match.index! + match[0].length;
     const endPos = i < matches.length - 1 ? matches[i + 1].index! : text.length;
     const pageText = text.slice(startPos, endPos).trim();
-    // 空セクションもページとして保持（セリフなしページ）
-    result.set(pageNum, pageText);
+
+    if (pattern.sequential) {
+      const pageNum = i + 1 + (hasPreText ? 1 : 0);
+      result.set(pageNum, pageText);
+    } else if (pattern.extractPages) {
+      // 複数ページ区切り: 全ページに同じテキストをセット
+      const pageNums = pattern.extractPages(match);
+      for (const pn of pageNums) {
+        result.set(pn, pageText);
+        sharedPages.set(pn, pageNums);
+      }
+    } else {
+      const pageNum = pattern.extractPage(match);
+      result.set(pageNum, pageText);
+    }
   }
 
-  return result;
+  return { pages: result, sharedPages };
 }
 
 /**
@@ -125,6 +149,38 @@ function splitByDoubleNewline(text: string): Map<number, string> {
   });
 
   return result;
+}
+
+/**
+ * PSDファイル名からページ番号を抽出する
+ */
+export interface MemoSection {
+  pageNums: number[];
+  text: string;
+}
+
+/**
+ * ParsedMemoからユニークなメモセクションを抽出する
+ * 共有ページ（<<1,2Page>>等）は1つのセクションにまとめる
+ */
+export function getUniqueMemoSections(parsedMemo: ParsedMemo): MemoSection[] {
+  const seen = new Set<string>();
+  const sections: MemoSection[] = [];
+
+  for (const [pageNum, text] of parsedMemo.pages) {
+    const sharedGroup = parsedMemo.sharedPages.get(pageNum);
+    const key = sharedGroup ? [...sharedGroup].sort((a, b) => a - b).join(',') : String(pageNum);
+
+    if (!seen.has(key)) {
+      seen.add(key);
+      sections.push({
+        pageNums: sharedGroup ? [...sharedGroup].sort((a, b) => a - b) : [pageNum],
+        text,
+      });
+    }
+  }
+
+  return sections;
 }
 
 /**

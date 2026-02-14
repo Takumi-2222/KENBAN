@@ -4,11 +4,12 @@ import {
   FileText, CheckCircle, AlertTriangle, Loader2,
   ClipboardPaste, Maximize2, Type, FolderOpen,
   ArrowUp, ArrowDown, SplitSquareVertical, Merge,
+  Eye, EyeOff,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { normalizeTextForComparison, buildUnifiedDiff } from '../utils/textExtract';
+import { normalizeTextForComparison, buildUnifiedDiff, CHUNK_BREAK } from '../utils/textExtract';
 import type { UnifiedDiffEntry } from '../utils/textExtract';
-import type { TextVerifyPage, DiffPart } from '../types';
+import type { TextVerifyPage, DiffPart, ExtractedTextLayer } from '../types';
 
 interface TextVerifyViewerProps {
   pages: TextVerifyPage[];
@@ -42,6 +43,9 @@ export default function TextVerifyViewer({
   const [isDragging, setIsDragging] = useState(false);
   const [viewMode, setViewMode] = useState<'unified' | 'split' | 'layers'>('unified');
   const [currentDiffIdx, setCurrentDiffIdx] = useState(0);
+  const [showHighlights, setShowHighlights] = useState(true);
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  const [imgNaturalSize, setImgNaturalSize] = useState({ w: 0, h: 0, src: '' });
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const imageContainerRef = useRef<HTMLDivElement>(null);
   const unifiedScrollRef = useRef<HTMLDivElement>(null);
@@ -89,6 +93,92 @@ export default function TextVerifyViewer({
     return new Set(normalized.split('\n').filter(Boolean));
   }, [currentPage?.memoText]);
 
+  // 差分のあるテキストレイヤー（画像ハイライト用）
+  // computeLineSetDiffと同じ貪欲マッチングで判定（Set判定だと重複行の差分を見逃す）
+  const layerDiffMap = useMemo((): (ExtractedTextLayer & { isLineBreakOnly: boolean })[] => {
+    if (!currentPage || currentPage.status !== 'done' || !currentPage.memoText) return [];
+
+    const normMemo = normalizeTextForComparison(currentPage.memoText);
+    const memoLines = normMemo.split('\n').filter(Boolean);
+
+    // PSD全行をレイヤー紐付きで構築
+    const psdLineEntries: { line: string; layerIdx: number }[] = [];
+    for (let li = 0; li < currentPage.extractedLayers.length; li++) {
+      const lines = normalizeTextForComparison(currentPage.extractedLayers[li].text).split('\n').filter(Boolean);
+      for (const line of lines) {
+        psdLineEntries.push({ line, layerIdx: li });
+      }
+    }
+
+    // 貪欲完全一致マッチ（computeLineSetDiff Pass 1 と同ロジック）
+    const memoUsed = new Set<number>();
+    const psdMatched = new Set<number>();
+    for (let i = 0; i < psdLineEntries.length; i++) {
+      for (let j = 0; j < memoLines.length; j++) {
+        if (!memoUsed.has(j) && psdLineEntries[i].line === memoLines[j]) {
+          psdMatched.add(i);
+          memoUsed.add(j);
+          break;
+        }
+      }
+    }
+
+    // 完全一致しなかったPSD行 → そのレイヤーは差分あり
+    const diffLayerIndices = new Set<number>();
+    for (let i = 0; i < psdLineEntries.length; i++) {
+      if (!psdMatched.has(i)) {
+        diffLayerIndices.add(psdLineEntries[i].layerIdx);
+      }
+    }
+
+    // 各差分レイヤーの改行のみ判定: レイヤーテキスト(改行除去) がメモの連続行(改行除去)と一致するか
+    return currentPage.extractedLayers.map((layer, idx) => {
+      if (!diffLayerIndices.has(idx)) return null;
+      const w = layer.right - layer.left;
+      const h = layer.bottom - layer.top;
+      if (w <= 0 || h <= 0) return null;
+
+      const layerLines = normalizeTextForComparison(layer.text).split('\n').filter(Boolean);
+      const layerJoined = layerLines.join('');
+      let isLineBreakOnly = false;
+      if (layerJoined.length > 0) {
+        for (let start = 0; start < memoLines.length && !isLineBreakOnly; start++) {
+          let joined = '';
+          for (let end = start; end < memoLines.length; end++) {
+            joined += memoLines[end];
+            if (joined === layerJoined) { isLineBreakOnly = true; break; }
+            if (joined.length >= layerJoined.length) break;
+          }
+        }
+      }
+
+      return { ...layer, isLineBreakOnly };
+    }).filter((v): v is ExtractedTextLayer & { isLineBreakOnly: boolean } => v !== null);
+  }, [currentPage]);
+
+  // コンテナサイズ追跡（ResizeObserver）
+  useEffect(() => {
+    const el = imageContainerRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        setContainerSize({ w: entry.contentRect.width, h: entry.contentRect.height });
+      }
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  // 画像表示サイズ計算（object-contain / max-w-full max-h-full と同等）
+  const fittedSize = useMemo(() => {
+    if (imgNaturalSize.src !== currentPage?.imageSrc) return null;
+    const { w: cw, h: ch } = containerSize;
+    const { w: nw, h: nh } = imgNaturalSize;
+    if (cw <= 0 || ch <= 0 || nw <= 0 || nh <= 0) return null;
+    const scale = Math.min(cw / nw, ch / nh, 1);
+    return { w: nw * scale, h: nh * scale };
+  }, [containerSize, imgNaturalSize, currentPage?.imageSrc]);
+
   // Photoshopで開く
   const openInPhotoshop = useCallback(() => {
     if (currentPage?.filePath) {
@@ -102,7 +192,7 @@ export default function TextVerifyViewer({
     return buildUnifiedDiff(diffResult.psd, diffResult.memo);
   }, [diffResult]);
 
-  const diffCount = useMemo(() => unifiedEntries.filter(e => e.type === 'diff').length, [unifiedEntries]);
+  const diffCount = useMemo(() => unifiedEntries.filter(e => e.type === 'diff' || e.type === 'linebreak').length, [unifiedEntries]);
 
   // 差分があるページのインデックスリスト（ページ横断ナビ用）
   const diffPageIndices = useMemo(() => {
@@ -110,7 +200,7 @@ export default function TextVerifyViewer({
     for (let i = 0; i < pages.length; i++) {
       const p = pages[i];
       if (p.status === 'done' && p.diffResult &&
-        (p.diffResult.psd.some(d => d.removed) || p.diffResult.memo.some(d => d.added))) {
+        (p.diffResult.psd.some(d => d.removed && d.value.replace(/\n$/, '') !== CHUNK_BREAK) || p.diffResult.memo.some(d => d.added && d.value.replace(/\n$/, '') !== CHUNK_BREAK))) {
         indices.push(i);
       }
     }
@@ -279,6 +369,15 @@ export default function TextVerifyViewer({
     };
 
     return parts.map((part, i) => {
+      // CHUNK_BREAK センチネルはスペーシングとして表示
+      const stripped = part.value.replace(/\n$/, '');
+      if (stripped === CHUNK_BREAK) {
+        return (
+          <span key={i} className="flex items-center py-1.5" style={{ display: 'flex' }}>
+            <span className="flex-1 h-px" style={{ background: 'linear-gradient(to right, transparent, var(--tv-rule), transparent)' }} />
+          </span>
+        );
+      }
       const isHighlighted = part.added || part.removed;
       if (!isHighlighted) {
         return <span key={i}>{part.value}</span>;
@@ -287,7 +386,7 @@ export default function TextVerifyViewer({
       if (isFullLine) {
         return (
           <span key={i} className="flex items-baseline gap-2" style={{ margin: '1px 0' }}>
-            <span style={fullLineStyle}>{part.value.replace(/\n$/, '')}</span>
+            <span style={fullLineStyle}>{stripped}</span>
             <span style={labelStyle}>{missingLabel}</span>
             {'\n'}
           </span>
@@ -328,15 +427,27 @@ export default function TextVerifyViewer({
               <div
                 ref={dropMemoRef}
                 onClick={onSelectMemo}
-                className={`flex-1 border border-dashed rounded-xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${
-                  dragOverSide === 'textVerifyMemo'
-                    ? 'border-teal-400/50 bg-teal-900/15 scale-[1.02]'
-                    : 'border-white/[0.08] hover:border-white/[0.15] hover:bg-white/[0.02]'
+                className={`flex-1 border rounded-xl py-40 px-16 min-h-[600px] flex flex-col items-center justify-center transition-all cursor-pointer ${
+                  memoRaw
+                    ? 'border-solid border-teal-400/30 bg-teal-900/10'
+                    : dragOverSide === 'textVerifyMemo'
+                      ? 'border-dashed border-teal-400/50 bg-teal-900/15 scale-[1.02]'
+                      : 'border-dashed border-white/[0.08] hover:border-white/[0.15] hover:bg-white/[0.02]'
                 }`}
               >
-                <FileText size={36} className={`mb-3 ${dragOverSide === 'textVerifyMemo' ? 'text-teal-400' : 'text-neutral-600'}`} />
-                <p className={`text-sm font-medium ${dragOverSide === 'textVerifyMemo' ? 'text-teal-300' : 'text-neutral-500'}`}>テキストメモ</p>
-                <p className="text-xs text-neutral-600 mt-1">.txt</p>
+                {memoRaw ? (
+                  <>
+                    <CheckCircle size={36} className="mb-3 text-teal-400/70" />
+                    <p className="text-sm font-medium text-teal-300/80">メモ読み込み済み</p>
+                    <p className="text-xs text-neutral-500 mt-1">PSDフォルダをドロップして開始</p>
+                  </>
+                ) : (
+                  <>
+                    <FileText size={36} className={`mb-3 ${dragOverSide === 'textVerifyMemo' ? 'text-teal-400' : 'text-neutral-600'}`} />
+                    <p className={`text-sm font-medium ${dragOverSide === 'textVerifyMemo' ? 'text-teal-300' : 'text-neutral-500'}`}>テキストメモ</p>
+                    <p className="text-xs text-neutral-600 mt-1">.txt</p>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -422,6 +533,21 @@ export default function TextVerifyViewer({
               <RotateCcw size={14} />
             </button>
             <div className="w-px h-4 bg-white/[0.06] mx-1" />
+            {layerDiffMap.length > 0 && (
+              <button
+                onClick={() => setShowHighlights(prev => !prev)}
+                className="p-1 rounded transition-colors"
+                style={{
+                  background: showHighlights ? 'rgba(194,90,90,0.12)' : 'transparent',
+                  color: showHighlights ? 'rgb(248,113,113)' : 'rgb(115,115,130)',
+                }}
+                title={showHighlights ? '差分ハイライト非表示' : '差分ハイライト表示'}
+                onMouseEnter={e => { if (!showHighlights) e.currentTarget.style.color = 'rgb(212,212,216)'; }}
+                onMouseLeave={e => { if (!showHighlights) e.currentTarget.style.color = 'rgb(115,115,130)'; }}
+              >
+                {showHighlights ? <Eye size={14} /> : <EyeOff size={14} />}
+              </button>
+            )}
             <button
               onClick={toggleFullscreen}
               className="p-1 rounded hover:bg-white/[0.06] text-neutral-500 hover:text-neutral-300 transition-colors"
@@ -455,7 +581,8 @@ export default function TextVerifyViewer({
               <span className="text-xs text-neutral-500">{currentPage.errorMessage || 'エラーが発生しました'}</span>
             </div>
           )}
-          {currentPage?.imageSrc && (
+          {/* fittedSize未算出: plain img（onLoadでnaturalSizeを取得） */}
+          {currentPage?.imageSrc && !fittedSize && (
             <img
               src={currentPage.imageSrc}
               alt={currentPage.fileName}
@@ -464,8 +591,59 @@ export default function TextVerifyViewer({
                 transform: `translate(${panPosition.x}px, ${panPosition.y}px) scale(${zoom})`,
                 transformOrigin: 'center center',
               }}
+              onLoad={e => {
+                setImgNaturalSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight, src: e.currentTarget.src });
+                // ResizeObserverが発火していない場合のフォールバック: コンテナサイズを直接測定
+                if (imageContainerRef.current) {
+                  const rect = imageContainerRef.current.getBoundingClientRect();
+                  if (rect.width > 0 && rect.height > 0) {
+                    setContainerSize({ w: rect.width, h: rect.height });
+                  }
+                }
+              }}
               draggable={false}
             />
+          )}
+          {/* fittedSize算出済み: 明示的サイズのラッパーでimg+SVGを重ねる */}
+          {currentPage?.imageSrc && fittedSize && (
+            <div
+              className="relative flex-shrink-0"
+              style={{
+                width: fittedSize.w,
+                height: fittedSize.h,
+                transform: `translate(${panPosition.x}px, ${panPosition.y}px) scale(${zoom})`,
+                transformOrigin: 'center center',
+              }}
+            >
+              <img
+                src={currentPage.imageSrc}
+                alt={currentPage.fileName}
+                className="w-full h-full select-none"
+                onLoad={e => setImgNaturalSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight, src: e.currentTarget.src })}
+                draggable={false}
+              />
+              {showHighlights && layerDiffMap.length > 0 && currentPage.psdWidth > 0 && (
+                <svg
+                  className="absolute inset-0 w-full h-full pointer-events-none"
+                  viewBox={`0 0 ${currentPage.psdWidth} ${currentPage.psdHeight}`}
+                  preserveAspectRatio="none"
+                >
+                  {layerDiffMap.map((layer, i) => (
+                    <rect
+                      key={i}
+                      x={layer.left}
+                      y={layer.top}
+                      width={layer.right - layer.left}
+                      height={layer.bottom - layer.top}
+                      fill={layer.isLineBreakOnly ? 'rgba(59,130,246,0.12)' : 'rgba(194,90,90,0.15)'}
+                      stroke={layer.isLineBreakOnly ? 'rgba(59,130,246,0.45)' : 'rgba(194,90,90,0.5)'}
+                      strokeWidth={Math.max(3, currentPage.psdWidth * 0.002)}
+                      rx={4}
+                    />
+                  ))}
+                </svg>
+              )}
+            </div>
           )}
           {currentPage?.status === 'pending' && !currentPage.imageSrc && (
             <div className="text-neutral-600 text-sm">画像未読込</div>
@@ -743,6 +921,13 @@ export default function TextVerifyViewer({
               ) : viewMode === 'unified' ? (
                 /* === 統合ビュー === */
                 <div ref={unifiedScrollRef} className="flex-1 overflow-y-auto px-4 py-3">
+                  {currentPage.memoShared && (
+                    <div className="mb-2 px-2.5 py-1 rounded text-[10px]"
+                      style={{ color: 'var(--tv-ink-tertiary)', background: 'rgba(108,168,168,0.06)', border: '1px solid rgba(108,168,168,0.12)' }}
+                    >
+                      {currentPage.memoSharedGroup.join(',') + 'P'} のメモから照合（PSD順で表示）
+                    </div>
+                  )}
                   {currentPage.status === 'loading' ? (
                     <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--tv-ink-tertiary)' }}>
                       <Loader2 size={12} className="animate-spin" />
@@ -759,9 +944,68 @@ export default function TextVerifyViewer({
                       {(() => {
                         let diffIdx = 0;
                         return unifiedEntries.map((entry, i) => {
+                          if (entry.type === 'separator') {
+                            return (
+                              <div key={i} className="flex items-center py-1.5">
+                                <div className="flex-1 h-px" style={{ background: 'linear-gradient(to right, transparent, var(--tv-rule), transparent)' }} />
+                              </div>
+                            );
+                          }
                           if (entry.type === 'match') {
                             return (
                               <div key={i} className="whitespace-pre-wrap break-all">{entry.text}</div>
+                            );
+                          }
+                          // 改行変更のみ
+                          if (entry.type === 'linebreak') {
+                            const idx = diffIdx++;
+                            const isCurrent = idx === currentDiffIdx;
+                            return (
+                              <div
+                                key={i}
+                                data-diff-idx={idx}
+                                className="my-1 rounded-md overflow-hidden transition-all duration-200"
+                                style={{
+                                  background: isCurrent ? 'rgba(59,130,246,0.08)' : 'rgba(59,130,246,0.03)',
+                                  border: `1px solid ${isCurrent ? 'rgba(59,130,246,0.4)' : 'rgba(59,130,246,0.15)'}`,
+                                  boxShadow: isCurrent ? '0 0 0 1px rgba(59,130,246,0.25)' : undefined,
+                                }}
+                              >
+                                <div className="px-2.5 pt-1 pb-0" style={{ borderBottom: '1px solid rgba(59,130,246,0.12)' }}>
+                                  <span className="flex items-center gap-1 text-[9px] font-semibold tracking-wide select-none" style={{ color: 'rgba(59,130,246,0.6)' }}>
+                                    <Type size={10} style={{ color: 'rgb(59,130,246)' }} />
+                                    改行変更
+                                  </span>
+                                </div>
+                                <div className="px-2.5 py-1 break-all">
+                                  {entry.psdText?.split('\n').map((line, li, arr) => (
+                                    <React.Fragment key={li}>
+                                      <span>{line}</span>
+                                      {li < arr.length - 1 && (
+                                        <>
+                                          <span className="select-none" style={{ color: 'rgb(59,130,246)', fontSize: '0.7em', opacity: 0.5 }}> {'↵'}</span>
+                                          <br />
+                                        </>
+                                      )}
+                                    </React.Fragment>
+                                  ))}
+                                  <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold tracking-wide select-none ml-1.5 align-baseline" style={{ color: 'rgba(59,130,246,0.55)' }}>PSD</span>
+                                </div>
+                                <div className="px-2.5 py-1 break-all" style={{ borderTop: '1px dashed rgba(59,130,246,0.15)' }}>
+                                  {entry.memoText?.split('\n').map((line, li, arr) => (
+                                    <React.Fragment key={li}>
+                                      <span>{line}</span>
+                                      {li < arr.length - 1 && (
+                                        <>
+                                          <span className="select-none" style={{ color: 'rgb(59,130,246)', fontSize: '0.7em', opacity: 0.5 }}> {'↵'}</span>
+                                          <br />
+                                        </>
+                                      )}
+                                    </React.Fragment>
+                                  ))}
+                                  <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold tracking-wide select-none ml-1.5 align-baseline" style={{ color: 'rgba(59,130,246,0.55)' }}>メモ</span>
+                                </div>
+                              </div>
                             );
                           }
                           const idx = diffIdx++;
@@ -777,16 +1021,17 @@ export default function TextVerifyViewer({
                                 boxShadow: isCurrent ? '0 0 0 1px rgba(200,160,60,0.35), 0 1px 4px rgba(200,160,60,0.12)' : undefined,
                               }}
                             >
-                              {/* 両方に存在するが文字差異がある場合のヘッダー */}
-                              {entry.psdParts && entry.memoParts && (
-                                <div className="px-2.5 pt-1 pb-0"
-                                  style={{ borderBottom: '1px solid var(--tv-rule)' }}
+                              {/* 差分ヘッダー */}
+                              <div className="px-2.5 pt-1 pb-0"
+                                style={{ borderBottom: '1px solid var(--tv-rule)' }}
+                              >
+                                <span className="flex items-center gap-1 text-[9px] font-semibold tracking-wide select-none"
+                                  style={{ color: entry.psdParts && entry.memoParts ? 'var(--tv-ink-tertiary)' : !entry.memoParts ? 'rgba(160,70,70,0.6)' : 'rgba(50,130,70,0.6)' }}
                                 >
-                                  <span className="flex items-center gap-1 text-[9px] font-semibold tracking-wide select-none"
-                                    style={{ color: 'var(--tv-ink-tertiary)' }}
-                                  ><AlertTriangle size={10} className="text-red-400" />文字差分あり</span>
-                                </div>
-                              )}
+                                  <AlertTriangle size={10} className="text-red-400" />
+                                  {entry.psdParts && entry.memoParts ? '文字差分あり' : !entry.memoParts ? 'PSDのみ' : 'メモのみ'}
+                                </span>
+                              </div>
                               {entry.psdParts && (
                                 <div className="px-2.5 py-1 whitespace-pre-wrap break-all"
                                 >
@@ -795,22 +1040,27 @@ export default function TextVerifyViewer({
                                       ? <span key={pi} style={{ background: 'rgba(194,90,90,0.18)', color: '#8a2020', borderRadius: '2px', padding: '0 2px' }}>{p.value}</span>
                                       : <span key={pi}>{p.value}</span>
                                   )}
-                                  <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold tracking-wide select-none ml-1.5 align-baseline"
-                                    style={{ color: 'rgba(160,70,70,0.55)' }}
-                                  >{!entry.memoParts && <AlertTriangle size={9} className="text-red-400" />}{entry.memoParts ? 'PSD' : 'PSDのみ'}</span>
+                                  {entry.memoParts && (
+                                    <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold tracking-wide select-none ml-1.5 align-baseline"
+                                      style={{ color: 'rgba(160,70,70,0.55)' }}
+                                    >PSD</span>
+                                  )}
                                 </div>
                               )}
                               {entry.memoParts && (
                                 <div className="px-2.5 py-1 whitespace-pre-wrap break-all"
+                                  style={{ borderTop: entry.psdParts ? '1px dashed var(--tv-rule)' : undefined }}
                                 >
                                   {entry.memoParts.map((p, mi) =>
                                     p.added
                                       ? <span key={mi} style={{ background: 'rgba(60,150,80,0.16)', color: '#1a6030', borderRadius: '2px', padding: '0 2px' }}>{p.value}</span>
                                       : <span key={mi}>{p.value}</span>
                                   )}
-                                  <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold tracking-wide select-none ml-1.5 align-baseline"
-                                    style={{ color: 'rgba(50,130,70,0.55)' }}
-                                  >{!entry.psdParts && <AlertTriangle size={9} className="text-red-400" />}{entry.psdParts ? 'メモ' : 'メモのみ'}</span>
+                                  {entry.psdParts && (
+                                    <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold tracking-wide select-none ml-1.5 align-baseline"
+                                      style={{ color: 'rgba(50,130,70,0.55)' }}
+                                    >メモ</span>
+                                  )}
                                 </div>
                               )}
                             </div>

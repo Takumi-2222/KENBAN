@@ -15,9 +15,9 @@ import Sidebar from './components/Sidebar';
 import DiffViewer from './components/DiffViewer';
 import ParallelViewer from './components/ParallelViewer';
 import TextVerifyViewer from './components/TextVerifyViewer';
-import { extractVisibleTextLayers, combineTextForComparison, normalizeTextForComparison, computeLineSetDiff } from './utils/textExtract';
-import { parseMemo, matchPageToFile } from './utils/memoParser';
-import type { CompareMode, AppMode, FileWithPath, CropBounds, DiffMarker, FilePair, PageCache, ParallelFileEntry, ParallelImageCache, TextVerifyPage, ExtractedTextLayer } from './types';
+import { extractVisibleTextLayers, combineTextForComparison, normalizeTextForComparison, computeLineSetDiff, computeSharedGroupDiff, findBestMemoSection } from './utils/textExtract';
+import { parseMemo, matchPageToFile, getUniqueMemoSections } from './utils/memoParser';
+import type { CompareMode, AppMode, FileWithPath, CropBounds, DiffMarker, DiffPart, FilePair, PageCache, ParallelFileEntry, ParallelImageCache, TextVerifyPage, ExtractedTextLayer } from './types';
 
 
 
@@ -876,6 +876,10 @@ export default function MangaDiffDetector() {
                   memoText: '',
                   diffResult: null,
                   status: 'pending' as const,
+                  psdWidth: 0,
+                  psdHeight: 0,
+                  memoShared: false,
+                  memoSharedGroup: [],
                 };
               });
               setTextVerifyPages(pages);
@@ -883,11 +887,12 @@ export default function MangaDiffDetector() {
               // メモが既にあればマッチング
               const currentMemo = textVerifyMemoRawRef.current;
               if (currentMemo) {
-                const memoPages = parseMemo(currentMemo);
+                const { pages: memoPages, sharedPages } = parseMemo(currentMemo);
                 setTextVerifyPages(pages.map(page => {
                   const pageNum = matchPageToFile(page.fileName);
                   const memoText = pageNum !== null ? (memoPages.get(pageNum) || '') : '';
-                  return { ...page, memoText };
+                  const memoSharedGroup = pageNum !== null ? (sharedPages.get(pageNum) || []) : [];
+                  return { ...page, memoText, memoShared: memoSharedGroup.length > 0, memoSharedGroup };
                 }));
               }
             } catch (err) {
@@ -2379,6 +2384,10 @@ export default function MangaDiffDetector() {
           memoText: '',
           diffResult: null,
           status: 'pending' as const,
+          psdWidth: 0,
+          psdHeight: 0,
+          memoShared: false,
+          memoSharedGroup: [],
         };
       });
 
@@ -2387,11 +2396,12 @@ export default function MangaDiffDetector() {
 
       // メモが既に読み込まれていればマッチング
       if (textVerifyMemoRaw) {
-        const memoPages = parseMemo(textVerifyMemoRaw);
+        const { pages: memoPages, sharedPages } = parseMemo(textVerifyMemoRaw);
         const updated = pages.map(page => {
           const pageNum = matchPageToFile(page.fileName);
           const memoText = pageNum !== null ? (memoPages.get(pageNum) || '') : '';
-          return { ...page, memoText };
+          const memoSharedGroup = pageNum !== null ? (sharedPages.get(pageNum) || []) : [];
+          return { ...page, memoText, memoShared: memoSharedGroup.length > 0, memoSharedGroup };
         });
         setTextVerifyPages(updated);
       }
@@ -2417,12 +2427,27 @@ export default function MangaDiffDetector() {
   // テキストメモを適用
   const applyTextVerifyMemo = useCallback((text: string) => {
     setTextVerifyMemoRaw(text);
-    const memoPages = parseMemo(text);
+    const parsed = parseMemo(text);
+    const { pages: memoPages, sharedPages } = parsed;
+    const sections = getUniqueMemoSections(parsed);
 
     setTextVerifyPages(prev => prev.map(page => {
       const pageNum = matchPageToFile(page.fileName);
-      const memoText = pageNum !== null ? (memoPages.get(pageNum) || '') : '';
-      return { ...page, memoText, diffResult: null, status: page.extractedText ? 'done' as const : page.status };
+      // ファイル名ベースのデフォルト割り当て
+      let memoText = pageNum !== null ? (memoPages.get(pageNum) || '') : '';
+      let memoSharedGroup = pageNum !== null ? (sharedPages.get(pageNum) || []) : [];
+
+      // 抽出済みページはコンテンツベースで最適セクションに上書き
+      if (page.extractedText && sections.length > 0) {
+        const normPsd = normalizeTextForComparison(page.extractedText);
+        const best = findBestMemoSection(normPsd, sections);
+        if (best && best.matchRatio > 0) {
+          memoText = best.text;
+          memoSharedGroup = best.pageNums;
+        }
+      }
+
+      return { ...page, memoText, memoShared: memoSharedGroup.length > 0, memoSharedGroup, diffResult: null, status: page.extractedText ? 'done' as const : page.status };
     }));
   }, []);
 
@@ -2470,13 +2495,13 @@ export default function MangaDiffDetector() {
 
       try {
         // PSDバッファのスコープを分離 — 関数抜けたら参照が切れてGC対象に
-        const { layers, extractedText } = await (async () => {
+        const { layers, extractedText, psdWidth, psdHeight } = await (async () => {
           const fileBytes = await tauriReadFile(page.filePath);
-          if (cancelled) return { layers: [] as ExtractedTextLayer[], extractedText: '' };
+          if (cancelled) return { layers: [] as ExtractedTextLayer[], extractedText: '', psdWidth: 0, psdHeight: 0 };
           const buffer = fileBytes.buffer as ArrayBuffer;
-          const l = extractVisibleTextLayers(buffer);
+          const { layers: l, psdWidth, psdHeight } = extractVisibleTextLayers(buffer);
           const t = combineTextForComparison(l);
-          return { layers: l, extractedText: t };
+          return { layers: l, extractedText: t, psdWidth, psdHeight };
         })();
         // ここで fileBytes / buffer への参照は消える
 
@@ -2485,9 +2510,52 @@ export default function MangaDiffDetector() {
         const latestPage = textVerifyPagesRef.current[idx];
         let computedDiff: TextVerifyPage['diffResult'] = null;
         if (latestPage?.memoText) {
-          const normPsd = normalizeTextForComparison(extractedText);
-          const normMemo = normalizeTextForComparison(latestPage.memoText);
-          computedDiff = computeLineSetDiff(normPsd, normMemo);
+          const normPsd = normalizeTextForComparison(extractedText, true);
+          const normMemo = normalizeTextForComparison(latestPage.memoText, true);
+          if (latestPage.memoShared) {
+            // 共有メモ: ペアの他ページがdoneなら一括処理、そうでなければ単体版（未マッチメモ省略）
+            const allPages = textVerifyPagesRef.current;
+            const groupPages = allPages.filter(p =>
+              p.memoSharedGroup.join(',') === latestPage.memoSharedGroup.join(',')
+              && p.status === 'done' && p.extractedText
+            );
+            // 自分を含めてグループ全員がdoneなら一括処理
+            // (自分はまだ更新前なのでgroupPagesに含まれない → +1で自分を加算)
+            const expectedCount = latestPage.memoSharedGroup.length;
+            const doneCount = groupPages.length + 1; // +1 for current page being processed
+            if (doneCount >= expectedCount) {
+              // ページ番号順でPSDテキストを並べる
+              const groupEntries: { pageNum: number; normPsd: string; pageIdx: number }[] = [];
+              for (const pn of latestPage.memoSharedGroup) {
+                const pi = allPages.findIndex(p => matchPageToFile(p.fileName) === pn);
+                if (pi >= 0 && pi !== idx && allPages[pi].status === 'done') {
+                  groupEntries.push({ pageNum: pn, normPsd: normalizeTextForComparison(allPages[pi].extractedText, true), pageIdx: pi });
+                } else if (pi === idx) {
+                  groupEntries.push({ pageNum: pn, normPsd, pageIdx: idx });
+                }
+              }
+              groupEntries.sort((a, b) => a.pageNum - b.pageNum);
+              const diffs = computeSharedGroupDiff(groupEntries.map(e => e.normPsd), normMemo);
+              // 自分のdiffを取得
+              const myGroupIdx = groupEntries.findIndex(e => e.pageIdx === idx);
+              computedDiff = myGroupIdx >= 0 ? diffs[myGroupIdx] : computeLineSetDiff(normPsd, normMemo);
+              // 他のグループメンバーのdiffも更新
+              setTextVerifyPages(prev => prev.map((p, i) => {
+                const entry = groupEntries.find(e => e.pageIdx === i && i !== idx);
+                if (entry) {
+                  const entryGroupIdx = groupEntries.indexOf(entry);
+                  return { ...p, diffResult: diffs[entryGroupIdx] };
+                }
+                return p;
+              }));
+            } else {
+              // 単体版: 未マッチメモ行を省略
+              const singleDiffs = computeSharedGroupDiff([normPsd], normMemo);
+              computedDiff = singleDiffs[0];
+            }
+          } else {
+            computedDiff = computeLineSetDiff(normPsd, normMemo);
+          }
         }
 
         if (cancelled) return;
@@ -2497,6 +2565,8 @@ export default function MangaDiffDetector() {
             ...p,
             extractedText,
             extractedLayers: layers,
+            psdWidth,
+            psdHeight,
             diffResult: computedDiff,
             status: 'done' as const,
           } : p
@@ -2513,6 +2583,85 @@ export default function MangaDiffDetector() {
       await new Promise(resolve => setTimeout(resolve, 50));
     };
 
+    // 全ページ抽出完了後、コンテンツベースでメモセクションを再割り当てしdiffを再計算
+    const reassignMemoSections = () => {
+      if (!textVerifyMemoRaw) return;
+      const parsed = parseMemo(textVerifyMemoRaw);
+      const sections = getUniqueMemoSections(parsed);
+      if (sections.length === 0) return;
+
+      setTextVerifyPages(prev => {
+        if (!prev.some(p => p.status === 'done' && p.extractedText)) return prev;
+
+        // Phase 1: コンテンツベースでメモセクション再割り当て
+        let anyChange = false;
+        const reassigned = prev.map(page => {
+          if (page.status !== 'done' || !page.extractedText) return page;
+          const normPsd = normalizeTextForComparison(page.extractedText);
+          const best = findBestMemoSection(normPsd, sections);
+          const changed = best && best.matchRatio > 0 && best.text !== page.memoText;
+          if (changed) {
+            anyChange = true;
+            return {
+              ...page,
+              memoText: best.text,
+              memoShared: best.pageNums.length > 1,
+              memoSharedGroup: best.pageNums,
+              diffResult: null,
+            };
+          }
+          return page;
+        });
+
+        if (!anyChange) return prev;
+
+        // Phase 2: 全ページのdiffを再計算
+        const groupDiffCache = new Map<string, Map<number, { psd: DiffPart[]; memo: DiffPart[] }>>();
+        const groupPageIndices = new Map<string, number[]>();
+
+        for (let i = 0; i < reassigned.length; i++) {
+          const page = reassigned[i];
+          if (page.memoShared && page.status === 'done' && page.extractedText && page.memoText) {
+            const key = page.memoSharedGroup.join(',');
+            if (!groupPageIndices.has(key)) groupPageIndices.set(key, []);
+            groupPageIndices.get(key)!.push(i);
+          }
+        }
+
+        for (const [key, indices] of groupPageIndices) {
+          const sorted = indices
+            .map(i => ({ idx: i, fileNum: matchPageToFile(reassigned[i].fileName) || 0 }))
+            .sort((a, b) => a.fileNum - b.fileNum);
+          const psdTexts = sorted.map(e => normalizeTextForComparison(reassigned[e.idx].extractedText, true));
+          const normMemo = normalizeTextForComparison(reassigned[indices[0]].memoText, true);
+          const diffs = computeSharedGroupDiff(psdTexts, normMemo);
+          const diffMap = new Map<number, { psd: DiffPart[]; memo: DiffPart[] }>();
+          sorted.forEach((e, i) => diffMap.set(e.idx, diffs[i]));
+          groupDiffCache.set(key, diffMap);
+        }
+
+        return reassigned.map((page, idx) => {
+          if (page.status !== 'done' || !page.extractedText) return page;
+          if (!page.memoText) return { ...page, diffResult: null };
+
+          if (page.memoShared) {
+            const key = page.memoSharedGroup.join(',');
+            const diffMap = groupDiffCache.get(key);
+            if (diffMap?.has(idx)) return { ...page, diffResult: diffMap.get(idx)! };
+            // グループの他ページがまだdoneでない場合は単体版
+            const normPsd = normalizeTextForComparison(page.extractedText, true);
+            const normMemo = normalizeTextForComparison(page.memoText, true);
+            const singleDiffs = computeSharedGroupDiff([normPsd], normMemo);
+            return { ...page, diffResult: singleDiffs[0] };
+          }
+
+          const normPsd = normalizeTextForComparison(page.extractedText, true);
+          const normMemo = normalizeTextForComparison(page.memoText, true);
+          return { ...page, diffResult: computeLineSetDiff(normPsd, normMemo) };
+        });
+      });
+    };
+
     const processAllPages = async () => {
       // 現在ページ最優先
       await extractText(textVerifyCurrentIndex);
@@ -2526,6 +2675,9 @@ export default function MangaDiffDetector() {
         if (cancelled) return;
         await extractText(idx);
       }
+
+      // 全ページ抽出完了: コンテンツベースでメモ再割り当て + diff再計算
+      if (!cancelled) reassignMemoSections();
     };
 
     processAllPages();
@@ -2595,16 +2747,59 @@ export default function MangaDiffDetector() {
   // メモ変更時に差分を再計算
   useEffect(() => {
     if (compareMode !== 'text-verify') return;
-    setTextVerifyPages(prev => prev.map(page => {
-      if (page.status !== 'done' || !page.extractedText) return page;
-      let computedDiff: TextVerifyPage['diffResult'] = null;
-      if (page.memoText) {
-        const normPsd = normalizeTextForComparison(page.extractedText);
-        const normMemo = normalizeTextForComparison(page.memoText);
-        computedDiff = computeLineSetDiff(normPsd, normMemo);
+    setTextVerifyPages(prev => {
+      // 共有グループを一括処理するためのキャッシュ
+      const groupDiffCache = new Map<string, Array<{ psd: DiffPart[]; memo: DiffPart[] }>>();
+      const groupPageIndices = new Map<string, number[]>();
+
+      // 共有グループの事前集計
+      for (let i = 0; i < prev.length; i++) {
+        const page = prev[i];
+        if (page.memoShared && page.status === 'done' && page.extractedText && page.memoText) {
+          const key = page.memoSharedGroup.join(',');
+          if (!groupPageIndices.has(key)) groupPageIndices.set(key, []);
+          groupPageIndices.get(key)!.push(i);
+        }
       }
-      return { ...page, diffResult: computedDiff };
-    }));
+
+      // 共有グループのdiffを一括計算
+      for (const [key, indices] of groupPageIndices) {
+        // ページ番号順にソート
+        const sorted = indices
+          .map(i => ({ idx: i, pageNum: matchPageToFile(prev[i].fileName) || 0 }))
+          .sort((a, b) => a.pageNum - b.pageNum);
+        const psdTexts = sorted.map(e => normalizeTextForComparison(prev[e.idx].extractedText, true));
+        const normMemo = normalizeTextForComparison(prev[indices[0]].memoText, true);
+        const diffs = computeSharedGroupDiff(psdTexts, normMemo);
+        // sorted順にマッピング
+        const diffMap = new Map<number, { psd: DiffPart[]; memo: DiffPart[] }>();
+        sorted.forEach((e, i) => diffMap.set(e.idx, diffs[i]));
+        groupDiffCache.set(key, diffs);
+        // indexからdiffへの直接マップを保存
+        for (const [pageIdx, diff] of diffMap) {
+          groupDiffCache.set(`idx:${pageIdx}`, [diff]);
+        }
+      }
+
+      return prev.map((page, idx) => {
+        if (page.status !== 'done' || !page.extractedText) return page;
+        if (!page.memoText) return { ...page, diffResult: null };
+
+        if (page.memoShared) {
+          const cached = groupDiffCache.get(`idx:${idx}`);
+          if (cached) return { ...page, diffResult: cached[0] };
+          // グループの他ページがまだdoneでない場合は単体版
+          const normPsd = normalizeTextForComparison(page.extractedText, true);
+          const normMemo = normalizeTextForComparison(page.memoText, true);
+          const singleDiffs = computeSharedGroupDiff([normPsd], normMemo);
+          return { ...page, diffResult: singleDiffs[0] };
+        }
+
+        const normPsd = normalizeTextForComparison(page.extractedText, true);
+        const normMemo = normalizeTextForComparison(page.memoText, true);
+        return { ...page, diffResult: computeLineSetDiff(normPsd, normMemo) };
+      });
+    });
   }, [textVerifyMemoRaw, compareMode]);
 
   // 全画面トランジション中フラグ（UI要素をCSSで収縮させる）

@@ -82,6 +82,10 @@ export interface ExtractedTextLayer {
   x: number;
   y: number;
   visible: boolean;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
 }
 
 export interface TextVerifyPage {
@@ -95,6 +99,10 @@ export interface TextVerifyPage {
   diffResult: { psd: DiffPart[]; memo: DiffPart[] } | null;
   status: 'pending' | 'loading' | 'done' | 'error';
   errorMessage?: string;
+  psdWidth: number;
+  psdHeight: number;
+  memoShared: boolean;
+  memoSharedGroup: number[];
 }
 
 export interface DiffPart {
