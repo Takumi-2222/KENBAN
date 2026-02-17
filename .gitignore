@@ -17,5 +17,8 @@ Thumbs.db
 tmpclaude-*
 nul
 
+# Auto-generated pdfjs wasm files (copied by postinstall)
+public/pdfjs-wasm/
+
 # Logs
 *.log

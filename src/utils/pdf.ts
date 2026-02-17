@@ -46,7 +46,7 @@ async function optimizePdfResources(
   await nextFrame();
   await new Promise(resolve => setTimeout(resolve, 50)); // UI更新待ち
 
-  // 元のPDFを読み込み
+  // 元のPDFを読み込み（pdf-lib: WASM不要）
   const srcPdf = await PDFDocument.load(arrayBuffer, {
     ignoreEncryption: true
   });
