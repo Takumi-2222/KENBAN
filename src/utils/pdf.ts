@@ -8,6 +8,10 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
+// JPEG 2000 (JPX) デコード用OpenJPEG WASMの設定
+// public/pdfjs-wasm/ にWASMファイルを配置済み
+const PDFJS_WASM_URL = '/pdfjs-wasm/';
+
 // ============== PDF最適化処理（MojiQから移植） ==============
 // pdf-lib最適化: 未参照リソースを削除してメモリ使用量を削減
 // ページめくり速度にも影響（5-30%改善）
@@ -82,7 +86,7 @@ async function compressPdfViaCanvas(
   onProgress?: (current: number, total: number) => void
 ): Promise<ArrayBuffer> {
   const typedArray = new Uint8Array(arrayBuffer);
-  const pdfDoc = await pdfjs.getDocument({ data: typedArray }).promise;
+  const pdfDoc = await pdfjs.getDocument({ data: typedArray, wasmUrl: PDFJS_WASM_URL }).promise;
   const numPages = pdfDoc.numPages;
 
   let newPdf: jsPDF | null = null;
@@ -297,7 +301,7 @@ export class PdfCacheManager {
       }
     }
 
-    const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+    const pdf = await pdfjs.getDocument({ data: arrayBuffer, wasmUrl: PDFJS_WASM_URL }).promise;
     const cached = { pdf, numPages: pdf.numPages, compressed: optimized };
     this.docCache.set(fileId, cached);
     return cached;
