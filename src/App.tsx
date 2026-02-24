@@ -1576,6 +1576,36 @@ export default function MangaDiffDetector() {
     });
   }, [selectedIndex, pairs, compareMode, processPair]);
 
+  // Phase2 プリフェッチ: 選択ペアがdoneになったら前後のcheckedペアを先読み
+  const prefetchSelectedRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (compareMode === 'pdf-pdf') return;
+    const pair = pairs[selectedIndex];
+    if (!pair || pair.status !== 'done') return;
+    if (prefetchSelectedRef.current === selectedIndex) return;
+
+    prefetchSelectedRef.current = selectedIndex;
+    const currentMode = compareMode;
+
+    const prefetchOrder = [
+      selectedIndex + 1, selectedIndex - 1,
+      selectedIndex + 2, selectedIndex - 2,
+    ];
+
+    (async () => {
+      for (const idx of prefetchOrder) {
+        if (compareModeRef.current !== currentMode) break;
+        if (prefetchSelectedRef.current !== selectedIndex) break;
+
+        if (idx < 0 || idx >= pairs.length) continue;
+        const p = pairs[idx];
+        if (!p || p.status !== 'checked') continue;
+
+        await processPair(idx);
+      }
+    })();
+  }, [selectedIndex, pairs, compareMode, processPair]);
+
   // PDFページ切り替え
   useEffect(() => {
     if (compareMode !== 'pdf-pdf') return;
