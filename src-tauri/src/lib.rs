@@ -1194,8 +1194,8 @@ fn compute_diff_heatmap(
     let crop_h = crop_bounds.bottom - crop_bounds.top;
     let cropped = psd_img.crop_imm(crop_bounds.left, crop_bounds.top, crop_w, crop_h);
 
-    // TIFFサイズにリサイズ（Nearest = imageSmoothingEnabled=false 相当）
-    let processed_psd = cropped.resize_exact(tiff_w, tiff_h, FilterType::Nearest);
+    // TIFFサイズにリサイズ（CatmullRom = Photoshop ResampleMethod.AUTOMATIC 相当）
+    let processed_psd = cropped.resize_exact(tiff_w, tiff_h, FilterType::CatmullRom);
 
     let rgba_a = processed_psd.to_rgba8();
     let rgba_b = tiff_img.to_rgba8();
@@ -1313,8 +1313,8 @@ fn check_diff_heatmap(
     let crop_h = crop_bounds.bottom - crop_bounds.top;
     let cropped = psd_img.crop_imm(crop_bounds.left, crop_bounds.top, crop_w, crop_h);
 
-    // TIFFサイズにリサイズ
-    let processed_psd = cropped.resize_exact(tiff_w, tiff_h, FilterType::Nearest);
+    // TIFFサイズにリサイズ（CatmullRom = Photoshop ResampleMethod.AUTOMATIC 相当）
+    let processed_psd = cropped.resize_exact(tiff_w, tiff_h, FilterType::CatmullRom);
 
     let rgba_a = processed_psd.to_rgba8();
     let rgba_b = tiff_img.to_rgba8();
