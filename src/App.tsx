@@ -197,8 +197,8 @@ export default function MangaDiffDetector() {
     return () => clearTimeout(timer);
   }, []);
 
-  // CLI引数による差分モード自動起動（--diff [mode] folderA folderB）
-  // mode: "tiff"（デフォルト）または "psd"
+  // CLI引数による差分モード自動起動（--diff [mode] folderA folderB [selectionJson]）
+  // mode: "tiff"（デフォルト）, "psd", "psd-tiff"
   useEffect(() => {
     (async () => {
       try {
@@ -206,18 +206,21 @@ export default function MangaDiffDetector() {
         const diffIdx = args.indexOf('--diff');
         if (diffIdx === -1 || diffIdx + 2 >= args.length) return;
 
-        // モード判定: --diff の次が "tiff" or "psd" ならモード指定、そうでなければフォルダパス
-        let mode: 'tiff-tiff' | 'psd-psd' = 'tiff-tiff';
+        // モード判定: --diff の次が "tiff" / "psd" / "psd-tiff" ならモード指定、そうでなければフォルダパス
+        let mode: CompareMode = 'tiff-tiff';
         let folderAIdx = diffIdx + 1;
         const possibleMode = args[diffIdx + 1];
-        if (possibleMode === 'tiff' || possibleMode === 'psd') {
-          mode = possibleMode === 'psd' ? 'psd-psd' : 'tiff-tiff';
+        if (possibleMode === 'tiff' || possibleMode === 'psd' || possibleMode === 'psd-tiff') {
+          if (possibleMode === 'psd') mode = 'psd-psd';
+          else if (possibleMode === 'psd-tiff') mode = 'psd-tiff';
+          else mode = 'tiff-tiff';
           folderAIdx = diffIdx + 2;
         }
 
         if (folderAIdx + 1 >= args.length) return;
         const folderA = args[folderAIdx];
         const folderB = args[folderAIdx + 1];
+        const selectionJsonArg = args[folderAIdx + 2]; // オプション: 選択範囲JSONパス
 
         // 差分チェック画面を直接起動
         setCompareMode(mode);
@@ -229,18 +232,53 @@ export default function MangaDiffDetector() {
         setDiffFolderA(folderA);
         setDiffFolderB(folderB);
 
-        // モードに応じた拡張子でフォルダ内ファイルを読み込み
-        const extensions = mode === 'psd-psd' ? ['psd', 'psb'] : ['tif', 'tiff'];
+        // 選択範囲JSON読み込み（psd-tiffモード用、オプション）
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let jsonData: any = null;
+        if (mode === 'psd-tiff' && selectionJsonArg) {
+          try {
+            const jsonContent: string = await invoke('read_text_file', { path: selectionJsonArg });
+            jsonData = JSON.parse(jsonContent);
+            // cropBoundsを設定
+            let bounds: CropBounds | null = null;
+            if (jsonData.selectionRanges?.length === 0) {
+              bounds = { left: 0, top: 0, right: -1, bottom: -1 };
+            } else if (jsonData.selectionRanges?.[0]?.bounds) {
+              bounds = jsonData.selectionRanges[0].bounds;
+            } else if (jsonData.bounds) {
+              bounds = jsonData.bounds;
+            }
+            if (bounds) setCropBounds(bounds);
+          } catch (err) {
+            console.error('Selection JSON load error:', err);
+          }
+        }
 
-        const filePathsA = await invoke<string[]>('list_files_in_folder', {
-          path: folderA, extensions,
-        });
+        // ファイル読み込み: JSON内にfilesA/filesBがあればそれを使用、なければフォルダスキャン
+        let filePathsA: string[];
+        let filePathsB: string[];
+
+        if (jsonData?.filesA) {
+          filePathsA = jsonData.filesA;
+        } else {
+          const extensionsA = mode === 'psd-psd' || mode === 'psd-tiff' ? ['psd', 'psb'] : ['tif', 'tiff'];
+          filePathsA = await invoke<string[]>('list_files_in_folder', {
+            path: folderA, extensions: extensionsA,
+          });
+        }
+
+        if (jsonData?.filesB) {
+          filePathsB = jsonData.filesB;
+        } else {
+          const extensionsB = mode === 'psd-tiff' ? ['tif', 'tiff'] : (mode === 'psd-psd' ? ['psd', 'psb'] : ['tif', 'tiff']);
+          filePathsB = await invoke<string[]>('list_files_in_folder', {
+            path: folderB, extensions: extensionsB,
+          });
+        }
+
         const filesFromA = await readFilesFromPaths(filePathsA);
         setFilesA(filesFromA.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })));
 
-        const filePathsB = await invoke<string[]>('list_files_in_folder', {
-          path: folderB, extensions,
-        });
         const filesFromB = await readFilesFromPaths(filePathsB);
         setFilesB(filesFromB.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })));
       } catch (err) {

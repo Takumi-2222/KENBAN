@@ -1358,6 +1358,12 @@ fn get_cli_args(state: State<'_, AppState>) -> Vec<String> {
     state.cli_args.clone()
 }
 
+#[tauri::command]
+fn read_text_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path)
+        .map_err(|e| format!("ファイル読み込みエラー: {}", e))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
@@ -1387,7 +1393,8 @@ pub fn run() {
             compute_diff_heatmap,
             check_diff_simple,
             check_diff_heatmap,
-            get_cli_args
+            get_cli_args,
+            read_text_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
