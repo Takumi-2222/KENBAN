@@ -71,20 +71,20 @@ interface DiffViewerProps {
 // モードラベル
 const getModeLabels = (compareMode: CompareMode) => {
   switch (compareMode) {
-    case 'tiff-tiff': return { a: 'TIFF (元)', b: 'TIFF (修正)', accept: '.tif,.tiff' };
+    case 'tiff-tiff': return { a: 'TIFF/JPG (元)', b: 'TIFF/JPG (修正)', accept: '.tif,.tiff,.jpg,.jpeg' };
     case 'psd-psd': return { a: 'PSD (元)', b: 'PSD (修正)', accept: '.psd' };
     case 'pdf-pdf': return { a: 'PDF (元)', b: 'PDF (修正)', accept: '.pdf' };
-    case 'psd-tiff': return { a: 'PSD (元)', b: 'TIFF (出力)', accept: { a: '.psd', b: '.tif,.tiff' } };
+    case 'psd-tiff': return { a: 'PSD (元)', b: 'TIFF/JPG (出力)', accept: { a: '.psd', b: '.tif,.tiff,.jpg,.jpeg' } };
     default: return { a: 'A', b: 'B', accept: '*' };
   }
 };
 
 const getAcceptedExtensions = (side: 'A' | 'B', compareMode: CompareMode): string[] => {
   switch (compareMode) {
-    case 'tiff-tiff': return ['.tif', '.tiff'];
+    case 'tiff-tiff': return ['.tif', '.tiff', '.jpg', '.jpeg'];
     case 'psd-psd': return ['.psd'];
     case 'pdf-pdf': return ['.pdf'];
-    case 'psd-tiff': return side === 'A' ? ['.psd'] : ['.tif', '.tiff'];
+    case 'psd-tiff': return side === 'A' ? ['.psd'] : ['.tif', '.tiff', '.jpg', '.jpeg'];
     default: return [];
   }
 };

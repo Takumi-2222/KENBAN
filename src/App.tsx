@@ -261,7 +261,7 @@ export default function MangaDiffDetector() {
         if (jsonData?.filesA) {
           filePathsA = jsonData.filesA;
         } else {
-          const extensionsA = mode === 'psd-psd' || mode === 'psd-tiff' ? ['psd', 'psb'] : ['tif', 'tiff'];
+          const extensionsA = mode === 'psd-psd' || mode === 'psd-tiff' ? ['psd', 'psb'] : ['tif', 'tiff', 'jpg', 'jpeg'];
           filePathsA = await invoke<string[]>('list_files_in_folder', {
             path: folderA, extensions: extensionsA,
           });
@@ -270,7 +270,7 @@ export default function MangaDiffDetector() {
         if (jsonData?.filesB) {
           filePathsB = jsonData.filesB;
         } else {
-          const extensionsB = mode === 'psd-tiff' ? ['tif', 'tiff'] : (mode === 'psd-psd' ? ['psd', 'psb'] : ['tif', 'tiff']);
+          const extensionsB = mode === 'psd-tiff' ? ['tif', 'tiff', 'jpg', 'jpeg'] : (mode === 'psd-psd' ? ['psd', 'psb'] : ['tif', 'tiff', 'jpg', 'jpeg']);
           filePathsB = await invoke<string[]>('list_files_in_folder', {
             path: folderB, extensions: extensionsB,
           });
@@ -399,10 +399,10 @@ export default function MangaDiffDetector() {
   // モードに応じたファイル拡張子フィルタ
   const getAcceptedExtensions = useCallback((side: 'A' | 'B') => {
     switch (compareMode) {
-      case 'tiff-tiff': return ['.tif', '.tiff'];
+      case 'tiff-tiff': return ['.tif', '.tiff', '.jpg', '.jpeg'];
       case 'psd-psd': return ['.psd'];
       case 'pdf-pdf': return ['.pdf'];
-      case 'psd-tiff': return side === 'A' ? ['.psd'] : ['.tif', '.tiff'];
+      case 'psd-tiff': return side === 'A' ? ['.psd'] : ['.tif', '.tiff', '.jpg', '.jpeg'];
       default: return [];
     }
   }, [compareMode]);
@@ -715,7 +715,7 @@ export default function MangaDiffDetector() {
       'pdf': 'application/pdf',
       'json': 'application/json'
     };
-    const supportedExts = ['psd', 'tif', 'tiff', 'pdf', 'json'];
+    const supportedExts = ['psd', 'tif', 'tiff', 'jpg', 'jpeg', 'pdf', 'json'];
 
     // ファイルパスを収集（読み込みはまだしない）
     const filePaths: string[] = [];
