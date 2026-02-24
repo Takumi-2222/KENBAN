@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import {
   FolderOpen, HelpCircle, Layers, FileDiff, Upload, Loader2,
   Target, HardDrive, FileText, RefreshCw, FileImage, Palette, Shuffle, Maximize2,
-  PanelLeftClose, Type
+  PanelLeftClose, Type, ArrowUp, ArrowDown
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import type { CompareMode, AppMode, ViewMode, FileWithPath, FilePair, CropBounds, DiffMarker } from '../types';
@@ -66,6 +66,10 @@ interface DiffViewerProps {
   dropZoneARef: React.RefObject<HTMLDivElement | null>;
   dropZoneBRef: React.RefObject<HTMLDivElement | null>;
   dropZoneJsonRef: React.RefObject<HTMLDivElement | null>;
+  diffFileIndices: number[];
+  diffNavPosition: { current: number; total: number };
+  goNextDiffFile: () => void;
+  goPrevDiffFile: () => void;
 }
 
 // モードラベル
@@ -142,6 +146,10 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
     dropZoneARef,
     dropZoneBRef,
     dropZoneJsonRef,
+    diffFileIndices,
+    diffNavPosition,
+    goNextDiffFile,
+    goPrevDiffFile,
   } = props;
 
   const [showFolderSelectPopup, setShowFolderSelectPopup] = useState(false);
@@ -348,6 +356,10 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                   <span className="text-neutral-400">{compareMode === 'pdf-pdf' ? 'ページ' : '選択'}</span>
                 </span>
                 <span className="flex items-center gap-1">
+                  <kbd className="px-1.5 py-0.5 bg-white/[0.06] rounded text-neutral-500 font-mono text-[10px] border border-white/[0.08]">J/K</kbd>
+                  <span className="text-neutral-400">差分移動</span>
+                </span>
+                <span className="flex items-center gap-1">
                   <kbd className="px-1.5 py-0.5 bg-white/[0.06] rounded text-neutral-500 font-mono text-[10px] border border-white/[0.08]">C</kbd>
                   <span className="text-neutral-400">指示</span>
                 </span>
@@ -483,6 +495,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                             <div className="flex justify-between"><span className="text-neutral-600">Space</span><span>A/B 切り替え</span></div>
                             <div className="flex justify-between"><span className="text-neutral-600">Ctrl+Space</span><span>差分表示トグル</span></div>
                             <div className="flex justify-between"><span className="text-neutral-600">↑ / ↓</span><span>{compareMode === 'pdf-pdf' ? 'ページ移動' : 'ファイル選択'}</span></div>
+                            <div className="flex justify-between"><span className="text-neutral-600">J / K</span><span>差分ファイル移動</span></div>
                             {(compareMode === 'psd-psd' || compareMode === 'psd-tiff') && <div className="flex justify-between"><span className="text-neutral-600">P</span><span>Photoshopで開く</span></div>}
                             {compareMode === 'pdf-pdf' && <div className="flex justify-between"><span className="text-neutral-600">Q</span><span>MojiQで開く</span></div>}
                             <div className="flex justify-between"><span className="text-neutral-600">C</span><span>スクリーンショット</span></div>
@@ -506,6 +519,36 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
 
                     {compareMode === 'psd-tiff' && currentPair.hasDiff && <div className="bg-orange-900/70 text-orange-300 px-3 py-1.5 rounded-lg shadow-lg text-sm font-semibold pointer-events-none border border-orange-500/20">差分可能性: {currentPair.diffProbability}%</div>}
                     {currentPair.hasDiff && currentMarkers.length > 0 && <div className="bg-cyan-900/70 text-cyan-300 px-3 py-1.5 rounded-lg shadow-lg text-sm font-semibold flex items-center gap-1 pointer-events-none border border-cyan-500/20"><Target size={14} /> {currentMarkers.length}箇所</div>}
+                    {/* 差分ガイドナビゲーション */}
+                    {diffFileIndices.length > 0 && (
+                      <div className="flex items-center gap-2 px-3 py-1.5 bg-neutral-800/90 backdrop-blur-md rounded-lg border border-white/[0.08] shadow-lg">
+                        <span className="inline-flex h-2 w-2 rounded-full shrink-0 bg-red-400/80" />
+                        <span className="text-xs font-semibold tracking-wide text-red-400/70">差分</span>
+                        <div className="w-px h-4 bg-white/[0.10]" />
+                        <span className="text-sm font-semibold min-w-[32px] text-center tabular-nums">
+                          {diffNavPosition.current >= 0 ? (
+                            <><span className="text-neutral-200">{diffNavPosition.current + 1}</span><span className="text-neutral-500">/</span><span className="text-neutral-500">{diffNavPosition.total}</span></>
+                          ) : (
+                            <><span className="text-neutral-500">--</span><span className="text-neutral-500">/</span><span className="text-neutral-500">{diffNavPosition.total}</span></>
+                          )}
+                        </span>
+                        <div className="w-px h-4 bg-white/[0.10]" />
+                        <button
+                          onClick={goPrevDiffFile}
+                          className="p-1.5 -m-0.5 rounded transition-colors text-neutral-400 hover:text-neutral-100 hover:bg-white/[0.08]"
+                          title="前の差分ファイル (K)"
+                        >
+                          <ArrowUp size={14} />
+                        </button>
+                        <button
+                          onClick={goNextDiffFile}
+                          className="p-1.5 -m-0.5 rounded transition-colors text-neutral-400 hover:text-neutral-100 hover:bg-white/[0.08]"
+                          title="次の差分ファイル (J)"
+                        >
+                          <ArrowDown size={14} />
+                        </button>
+                      </div>
+                    )}
                   </div>
                   )}
 
@@ -653,6 +696,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                       <div className="flex justify-between"><span className="text-neutral-600">Space</span><span>A/B 切り替え</span></div>
                       <div className="flex justify-between"><span className="text-neutral-600">Ctrl+Space</span><span>差分表示トグル</span></div>
                       <div className="flex justify-between"><span className="text-neutral-600">↑ / ↓</span><span>{compareMode === 'pdf-pdf' ? 'ページ移動' : 'ファイル選択'}</span></div>
+                      <div className="flex justify-between"><span className="text-neutral-600">J / K</span><span>差分ファイル移動</span></div>
                       {(compareMode === 'psd-psd' || compareMode === 'psd-tiff') && <div className="flex justify-between"><span className="text-neutral-600">P</span><span>Photoshopで開く</span></div>}
                       {compareMode === 'pdf-pdf' && <div className="flex justify-between"><span className="text-neutral-600">Q</span><span>MojiQで開く</span></div>}
                       <div className="flex justify-between"><span className="text-neutral-600">C</span><span>スクリーンショット</span></div>

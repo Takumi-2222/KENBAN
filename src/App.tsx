@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { CheckCircle, AlertTriangle, Loader2, RefreshCw, Download } from 'lucide-react';
 import { pdfCache, checkPdfFileSize, globalOptimizeProgress, setOptimizeProgressCallback } from './utils/pdf';
@@ -2901,6 +2901,38 @@ export default function MangaDiffDetector() {
   // 並列ビューの最大ページ数
   const parallelMaxIndex = Math.max(parallelFilesA.length, parallelFilesB.length) - 1;
 
+  // 差分ガイドナビゲーション（差分ファイルのみスキップ移動）
+  const diffFileIndices = useMemo(() =>
+    pairs
+      .filter(p => (p.status === 'done' || p.status === 'checked') && p.hasDiff)
+      .map(p => p.index),
+    [pairs]
+  );
+  const diffNavPosition = useMemo(() => ({
+    current: diffFileIndices.indexOf(selectedIndex),
+    total: diffFileIndices.length,
+  }), [diffFileIndices, selectedIndex]);
+
+  const goNextDiffFile = useCallback(() => {
+    if (diffFileIndices.length === 0) return;
+    const nextIdx = diffFileIndices.find(i => i > selectedIndex);
+    if (nextIdx !== undefined) {
+      setSelectedIndex(nextIdx);
+    } else {
+      setSelectedIndex(diffFileIndices[0]);
+    }
+  }, [diffFileIndices, selectedIndex]);
+
+  const goPrevDiffFile = useCallback(() => {
+    if (diffFileIndices.length === 0) return;
+    const prevIndices = diffFileIndices.filter(i => i < selectedIndex);
+    if (prevIndices.length > 0) {
+      setSelectedIndex(prevIndices[prevIndices.length - 1]);
+    } else {
+      setSelectedIndex(diffFileIndices[diffFileIndices.length - 1]);
+    }
+  }, [diffFileIndices, selectedIndex]);
+
   // キーボード操作
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -3227,6 +3259,9 @@ export default function MangaDiffDetector() {
         e.preventDefault();
         setViewMode(prev => prev === 'diff' ? 'A' : prev === 'A' ? 'B' : 'A');
       }
+      // J/K: 差分ファイルのみナビゲーション
+      if (e.code === 'KeyJ' && compareMode !== 'text-verify') { e.preventDefault(); goNextDiffFile(); return; }
+      if (e.code === 'KeyK' && compareMode !== 'text-verify') { e.preventDefault(); goPrevDiffFile(); return; }
       // PDF-PDFモードでは上下キーでページ移動
       if (compareMode === 'pdf-pdf' && pairs[selectedIndex]?.status === 'done') {
         const totalPages = pairs[selectedIndex]?.totalPages || 1;
@@ -3311,7 +3346,7 @@ export default function MangaDiffDetector() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [pairs, selectedIndex, compareMode, viewMode, appMode, parallelMaxIndex, parallelSyncMode, parallelActivePanel, parallelCurrentIndex, parallelIndexA, parallelIndexB, parallelFilesA, parallelFilesB, parallelImageA, parallelImageB, transferDiffToParallelView, capturedImage, parallelCapturedImageA, parallelCapturedImageB, refreshDiffMode, refreshParallelView, toggleFullscreen, isFullscreen, clearParallelView]);
+  }, [pairs, selectedIndex, compareMode, viewMode, appMode, parallelMaxIndex, parallelSyncMode, parallelActivePanel, parallelCurrentIndex, parallelIndexA, parallelIndexB, parallelFilesA, parallelFilesB, parallelImageA, parallelImageB, transferDiffToParallelView, capturedImage, parallelCapturedImageA, parallelCapturedImageB, refreshDiffMode, refreshParallelView, toggleFullscreen, isFullscreen, clearParallelView, goNextDiffFile, goPrevDiffFile]);
 
   // 表示画像取得
   const currentPair = pairs[selectedIndex];
@@ -3645,6 +3680,10 @@ export default function MangaDiffDetector() {
             dropZoneARef={dropZoneARef}
             dropZoneBRef={dropZoneBRef}
             dropZoneJsonRef={dropZoneJsonRef}
+            diffFileIndices={diffFileIndices}
+            diffNavPosition={diffNavPosition}
+            goNextDiffFile={goNextDiffFile}
+            goPrevDiffFile={goPrevDiffFile}
           />
         ) : (
           <ParallelViewer
