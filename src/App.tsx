@@ -5,7 +5,7 @@ import { pdfCache, checkPdfFileSize, globalOptimizeProgress, setOptimizeProgress
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { readFile as tauriReadFile, readDir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, ask } from '@tauri-apps/plugin-dialog';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import GDriveFolderBrowser from './components/GDriveFolderBrowser';
@@ -16,7 +16,7 @@ import DiffViewer from './components/DiffViewer';
 import ParallelViewer from './components/ParallelViewer';
 import TextVerifyViewer from './components/TextVerifyViewer';
 import { extractVisibleTextLayers, combineTextForComparison, normalizeTextForComparison, computeLineSetDiff, computeSharedGroupDiff, findBestMemoSection } from './utils/textExtract';
-import { parseMemo, matchPageToFile, getUniqueMemoSections } from './utils/memoParser';
+import { parseMemo, matchPageToFile, getUniqueMemoSections, replaceMemoSection } from './utils/memoParser';
 import type { CompareMode, AppMode, FileWithPath, CropBounds, DiffMarker, DiffPart, FilePair, PageCache, ParallelFileEntry, ParallelImageCache, TextVerifyPage, ExtractedTextLayer } from './types';
 
 
@@ -100,6 +100,15 @@ export default function MangaDiffDetector() {
   const [textVerifyPages, setTextVerifyPages] = useState<TextVerifyPage[]>([]);
   const [textVerifyCurrentIndex, setTextVerifyCurrentIndex] = useState(0);
   const [textVerifyMemoRaw, setTextVerifyMemoRaw] = useState('');
+  const [textVerifyMemoFilePath, setTextVerifyMemoFilePath] = useState<string | null>(null);
+  const [textVerifyHasUnsavedChanges, setTextVerifyHasUnsavedChanges] = useState(false);
+  const [textVerifyUndoStack, setTextVerifyUndoStack] = useState<string[]>([]);
+  const UNDO_MAX = 50;
+  const textVerifyHasUnsavedRef = useRef(false);
+  textVerifyHasUnsavedRef.current = textVerifyHasUnsavedChanges;
+  const textVerifyMemoFilePathRef = useRef<string | null>(null);
+  textVerifyMemoFilePathRef.current = textVerifyMemoFilePath;
+  const saveTextVerifyMemoRef = useRef<() => Promise<boolean>>(async () => false);
   const textVerifyFileListRef = useRef<HTMLDivElement>(null);
 
   // ============== 自動更新 ==============
@@ -944,6 +953,9 @@ export default function MangaDiffDetector() {
               const bytes = await tauriReadFile(firstPath);
               const decoder = new TextDecoder('utf-8');
               const text = decoder.decode(bytes);
+              setTextVerifyMemoFilePath(firstPath);
+              setTextVerifyHasUnsavedChanges(false);
+              setTextVerifyUndoStack([]);
               applyTextVerifyMemo(text);
             } catch (err) {
               console.error('Failed to load memo from drop:', err);
@@ -997,6 +1009,31 @@ export default function MangaDiffDetector() {
     return () => { unlistenPromise.then(fn => fn()); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readFilesFromPaths, isAcceptedFile, getAcceptedExtensions, loadJsonFile, getDropZoneFromPosition, handleParallelTauriDrop]);
+
+  // ウィンドウ閉じ時の未保存チェック
+  useEffect(() => {
+    const setupCloseGuard = async () => {
+      const appWindow = getCurrentWebviewWindow();
+      return await appWindow.onCloseRequested(async (event) => {
+        if (!textVerifyHasUnsavedRef.current) return;
+        if (textVerifyMemoFilePathRef.current) {
+          // ファイルから読み込んだメモ → 保存可能
+          const save = await ask('テキストメモに未保存の変更があります。保存しますか？', {
+            title: 'KENBAN', kind: 'warning', okLabel: '保存して閉じる', cancelLabel: '保存しない',
+          });
+          if (save) await saveTextVerifyMemoRef.current();
+        } else {
+          // クリップボード貼り付けメモ → 保存先なし、確認のみ
+          const ok = await ask('テキストメモに未保存の変更があります。閉じますか？', {
+            title: 'KENBAN', kind: 'warning', okLabel: '閉じる', cancelLabel: 'キャンセル',
+          });
+          if (!ok) event.preventDefault();
+        }
+      });
+    };
+    const p = setupCloseGuard();
+    return () => { p.then(fn => fn()); };
+  }, []);
 
   // DataTransferItemからファイルを再帰的に取得（ブラウザ用フォールバック）
   const getAllFilesFromDataTransfer = useCallback(async (dataTransfer: DataTransfer) => {
@@ -2489,6 +2526,9 @@ export default function MangaDiffDetector() {
     const bytes = await tauriReadFile(selected);
     const decoder = new TextDecoder('utf-8');
     const text = decoder.decode(bytes);
+    setTextVerifyMemoFilePath(selected);
+    setTextVerifyHasUnsavedChanges(false);
+    setTextVerifyUndoStack([]);
     applyTextVerifyMemo(text);
   }, []);
 
@@ -2524,6 +2564,9 @@ export default function MangaDiffDetector() {
     try {
       const text = await navigator.clipboard.readText();
       if (text.trim()) {
+        setTextVerifyMemoFilePath(null);
+        setTextVerifyHasUnsavedChanges(false);
+        setTextVerifyUndoStack([]);
         applyTextVerifyMemo(text);
       }
     } catch {
@@ -2531,12 +2574,86 @@ export default function MangaDiffDetector() {
     }
   }, [applyTextVerifyMemo]);
 
-  // クリア
-  const clearTextVerify = useCallback(() => {
+  // メモテキストのページ単位更新（編集機能）
+  const updatePageMemoText = useCallback((pageIndex: number, newMemoText: string) => {
+    const page = textVerifyPagesRef.current[pageIndex];
+    if (!page) return;
+    const pageNum = matchPageToFile(page.fileName);
+
+    // undo用: 変更前のrawを保存
+    setTextVerifyUndoStack(prev => [...prev.slice(-(UNDO_MAX - 1)), textVerifyMemoRaw]);
+
+    // raw memo再構築
+    if (pageNum !== null && textVerifyMemoRaw) {
+      const parsed = parseMemo(textVerifyMemoRaw);
+      const newRaw = replaceMemoSection(textVerifyMemoRaw, parsed.sections, pageNum, newMemoText);
+      setTextVerifyMemoRaw(newRaw);
+    }
+
+    // diff再計算
+    setTextVerifyPages(prev => prev.map((p, i) => {
+      if (i === pageIndex) {
+        const normPsd = normalizeTextForComparison(p.extractedText, true);
+        const normMemo = normalizeTextForComparison(newMemoText, true);
+        const newDiff = computeLineSetDiff(normPsd, normMemo);
+        return { ...p, memoText: newMemoText, diffResult: newDiff };
+      }
+      // 共有ページのmemoTextとdiffも同時更新
+      if (page.memoShared && p.memoSharedGroup.join(',') === page.memoSharedGroup.join(',') && p.extractedText) {
+        const normPsd2 = normalizeTextForComparison(p.extractedText, true);
+        const normMemo2 = normalizeTextForComparison(newMemoText, true);
+        const newDiff2 = computeLineSetDiff(normPsd2, normMemo2);
+        return { ...p, memoText: newMemoText, diffResult: newDiff2 };
+      }
+      return p;
+    }));
+    setTextVerifyHasUnsavedChanges(true);
+  }, [textVerifyMemoRaw]);
+
+  // Undo
+  const undoTextVerifyMemo = useCallback(() => {
+    if (textVerifyUndoStack.length === 0) return;
+    const prevRaw = textVerifyUndoStack[textVerifyUndoStack.length - 1];
+    setTextVerifyUndoStack(prev => prev.slice(0, -1));
+    applyTextVerifyMemo(prevRaw);
+  }, [textVerifyUndoStack, applyTextVerifyMemo]);
+
+  // メモファイル保存
+  const saveTextVerifyMemo = useCallback(async (): Promise<boolean> => {
+    if (!textVerifyMemoFilePath) return false;
+    try {
+      await invoke('write_text_file', { path: textVerifyMemoFilePath, content: textVerifyMemoRaw });
+      setTextVerifyHasUnsavedChanges(false);
+      return true;
+    } catch (err) {
+      console.error('Failed to save memo:', err);
+      return false;
+    }
+  }, [textVerifyMemoFilePath, textVerifyMemoRaw]);
+  saveTextVerifyMemoRef.current = saveTextVerifyMemo;
+
+  // クリア（未保存チェック付き）
+  const clearTextVerify = useCallback(async () => {
+    if (textVerifyHasUnsavedRef.current) {
+      if (textVerifyMemoFilePath) {
+        const save = await ask('テキストメモに未保存の変更があります。保存しますか？', {
+          title: 'KENBAN', kind: 'warning', okLabel: '保存して閉じる', cancelLabel: '保存しない',
+        });
+        if (save) await saveTextVerifyMemo();
+      } else {
+        const ok = await ask('テキストメモに未保存の変更があります。閉じますか？', {
+          title: 'KENBAN', kind: 'warning', okLabel: '閉じる', cancelLabel: 'キャンセル',
+        });
+        if (!ok) return;
+      }
+    }
     setTextVerifyPages([]);
     setTextVerifyCurrentIndex(0);
     setTextVerifyMemoRaw('');
-  }, []);
+    setTextVerifyMemoFilePath(null);
+    setTextVerifyHasUnsavedChanges(false);
+    setTextVerifyUndoStack([]);
+  }, [textVerifyMemoFilePath, saveTextVerifyMemo]);
 
   // テキスト抽出 + 差分計算（全ページ自動処理、現在ページ優先）
   const textVerifyPagesRef = useRef(textVerifyPages);
@@ -3006,6 +3123,9 @@ export default function MangaDiffDetector() {
 
       // テキスト照合モードのキー操作
       if (appMode === 'diff-check' && compareMode === 'text-verify') {
+        // テキスト編集中は矢印キー等をブラウザデフォルトに任せる
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === 'TEXTAREA' || tag === 'INPUT') return;
         if (e.code === 'ArrowRight' || e.code === 'ArrowDown') {
           e.preventDefault();
           setTextVerifyCurrentIndex(prev => Math.min(prev + 1, textVerifyPages.length - 1));
@@ -3620,6 +3740,12 @@ export default function MangaDiffDetector() {
             dragOverSide={dragOverSide}
             onSelectFolder={handleSelectTextVerifyFolder}
             onSelectMemo={handleSelectTextVerifyMemo}
+            memoFilePath={textVerifyMemoFilePath}
+            hasUnsavedChanges={textVerifyHasUnsavedChanges}
+            canUndo={textVerifyUndoStack.length > 0}
+            onUpdatePageMemo={updatePageMemoText}
+            onSaveMemo={saveTextVerifyMemo}
+            onUndo={undoTextVerifyMemo}
           />
         ) : appMode === 'diff-check' ? (
           <DiffViewer

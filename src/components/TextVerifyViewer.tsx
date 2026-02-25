@@ -4,10 +4,10 @@ import {
   FileText, CheckCircle, AlertTriangle, Loader2,
   ClipboardPaste, Maximize2, Type, FolderOpen,
   ArrowUp, ArrowDown, SplitSquareVertical, Merge,
-  Eye, EyeOff,
+  Eye, EyeOff, Pencil, PencilOff, Save, Undo2,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { normalizeTextForComparison, buildUnifiedDiff, CHUNK_BREAK } from '../utils/textExtract';
+import { normalizeTextForComparison, buildUnifiedDiff, CHUNK_BREAK, getMemoTextFromEntry, getPsdTextFromEntry, reconstructMemoFromEntries } from '../utils/textExtract';
 import type { UnifiedDiffEntry } from '../utils/textExtract';
 import type { TextVerifyPage, DiffPart, ExtractedTextLayer } from '../types';
 
@@ -23,6 +23,12 @@ interface TextVerifyViewerProps {
   dragOverSide: string | null;
   onSelectFolder: () => void;
   onSelectMemo: () => void;
+  memoFilePath: string | null;
+  hasUnsavedChanges: boolean;
+  canUndo: boolean;
+  onUpdatePageMemo: (pageIndex: number, newText: string) => void;
+  onSaveMemo: () => Promise<boolean>;
+  onUndo: () => void;
 }
 
 export default function TextVerifyViewer({
@@ -37,6 +43,12 @@ export default function TextVerifyViewer({
   dragOverSide,
   onSelectFolder,
   onSelectMemo,
+  memoFilePath,
+  hasUnsavedChanges,
+  canUndo,
+  onUpdatePageMemo,
+  onSaveMemo,
+  onUndo,
 }: TextVerifyViewerProps) {
   const [zoom, setZoom] = useState(1);
   const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
@@ -46,9 +58,16 @@ export default function TextVerifyViewer({
   const [showHighlights, setShowHighlights] = useState(true);
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
   const [imgNaturalSize, setImgNaturalSize] = useState({ w: 0, h: 0, src: '' });
+  const [editingBlockIndex, setEditingBlockIndex] = useState<number | null>(null);
+  const [isFullEditing, setIsFullEditing] = useState(false);
+  const [isSplitEditing, setIsSplitEditing] = useState(false);
+  const [editText, setEditText] = useState('');
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const imageContainerRef = useRef<HTMLDivElement>(null);
   const unifiedScrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const cancellingRef = useRef(false);
+  const cursorOffsetRef = useRef<number | null>(null);
 
   const currentPage = pages[currentIndex] || null;
 
@@ -346,6 +365,124 @@ export default function TextVerifyViewer({
     }
   }, [onPasteMemo]);
 
+  // ダブルクリック位置からテキストオフセットを計算
+  const getClickOffset = useCallback((container: HTMLElement): number => {
+    const sel = window.getSelection();
+    if (!sel || !sel.anchorNode) return 0;
+    let offset = 0;
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    let node: Text | null;
+    while ((node = walker.nextNode() as Text | null)) {
+      if (node === sel.anchorNode) {
+        return offset + sel.anchorOffset;
+      }
+      offset += node.textContent?.length || 0;
+    }
+    return 0;
+  }, []);
+
+  // インライン編集開始時にtextareaへフォーカス＋カーソル位置設定
+  useEffect(() => {
+    if (editingBlockIndex !== null && textareaRef.current) {
+      const ta = textareaRef.current;
+      ta.focus();
+      if (cursorOffsetRef.current !== null) {
+        const pos = Math.min(cursorOffsetRef.current, ta.value.length);
+        ta.selectionStart = pos;
+        ta.selectionEnd = pos;
+        cursorOffsetRef.current = null;
+      }
+    }
+  }, [editingBlockIndex]);
+
+  // 統合ビュー: インライン編集確定
+  const handleInlineEditConfirm = useCallback(() => {
+    if (editingBlockIndex === null) return;
+    const origMemoText = getMemoTextFromEntry(unifiedEntries[editingBlockIndex]);
+    // 変更がなければ何もしない
+    if (editText === origMemoText) {
+      setEditingBlockIndex(null);
+      return;
+    }
+    const newMemoText = reconstructMemoFromEntries(unifiedEntries, editingBlockIndex, editText);
+    onUpdatePageMemo(currentIndex, newMemoText);
+    setEditingBlockIndex(null);
+  }, [editingBlockIndex, editText, unifiedEntries, currentIndex, onUpdatePageMemo]);
+
+  // 全体エディタ / 分割エディタの適用
+  const handleFullEditApply = useCallback(() => {
+    if (!currentPage) return;
+    if (editText !== currentPage.memoText) {
+      onUpdatePageMemo(currentIndex, editText);
+    }
+    setIsFullEditing(false);
+    setIsSplitEditing(false);
+  }, [editText, currentPage, currentIndex, onUpdatePageMemo]);
+
+  // ページ切替時に編集中なら自動適用
+  const prevIndexRef = useRef(currentIndex);
+  useEffect(() => {
+    if (prevIndexRef.current !== currentIndex) {
+      // 統合インライン
+      if (editingBlockIndex !== null) {
+        const origMemoText = getMemoTextFromEntry(unifiedEntries[editingBlockIndex]);
+        if (editText !== origMemoText) {
+          const newMemoText = reconstructMemoFromEntries(unifiedEntries, editingBlockIndex, editText);
+          onUpdatePageMemo(prevIndexRef.current, newMemoText);
+        }
+        setEditingBlockIndex(null);
+      }
+      // 全体 / 分割
+      if (isFullEditing || isSplitEditing) {
+        const prevPage = pages[prevIndexRef.current];
+        if (prevPage && editText !== prevPage.memoText) {
+          onUpdatePageMemo(prevIndexRef.current, editText);
+        }
+        // 新ページのテキストで更新
+        const newPage = pages[currentIndex];
+        if (newPage) setEditText(newPage.memoText);
+      }
+      prevIndexRef.current = currentIndex;
+    }
+  }, [currentIndex]);
+
+  // キーボードショートカット
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // 編集中のtextarea内のCtrl+Zはブラウザデフォルトに任せる
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !(e.target instanceof HTMLTextAreaElement)) {
+        e.preventDefault();
+        onUndo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        onSaveMemo();
+        return;
+      }
+      if (e.key === 'Escape') {
+        if (editingBlockIndex !== null) {
+          setEditingBlockIndex(null);
+        } else if (isFullEditing) {
+          setIsFullEditing(false);
+        } else if (isSplitEditing) {
+          setIsSplitEditing(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [editingBlockIndex, isFullEditing, isSplitEditing, onUndo, onSaveMemo]);
+
+  // textarea自動リサイズ
+  useEffect(() => {
+    if (textareaRef.current && (editingBlockIndex !== null)) {
+      const ta = textareaRef.current;
+      ta.style.height = 'auto';
+      ta.style.height = ta.scrollHeight + 'px';
+    }
+  }, [editText, editingBlockIndex]);
+
   // 差分テキストのレンダリング
   // diffType: 'tv-diff-remove' (PSD側) or 'tv-diff-add' (メモ側)
   const renderDiffText = useCallback((parts: DiffPart[], diffType: string, missingLabel: string) => {
@@ -371,6 +508,8 @@ export default function TextVerifyViewer({
     return parts.map((part, i) => {
       // CHUNK_BREAK センチネルはスペーシングとして表示
       const stripped = part.value.replace(/\n$/, '');
+      // ゼロ幅マーカー（changed行判定用）はスキップ
+      if (!stripped && (part.added || part.removed)) return null;
       if (stripped === CHUNK_BREAK) {
         return (
           <span key={i} className="flex items-center py-1.5" style={{ display: 'flex' }}>
@@ -701,21 +840,82 @@ export default function TextVerifyViewer({
                 >P{currentIndex + 1}</span>
               )}
             </span>
-            {stats.total > 0 && (
-              <div className="flex items-center gap-3 text-[10px]">
-                <span className="flex items-center gap-1">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#4a9a5a]" />
-                  <span style={{ color: 'var(--tv-ink-secondary)' }}>{stats.matched}</span>
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#c45a5a]" />
-                  <span style={{ color: 'var(--tv-ink-secondary)' }}>{stats.mismatched}</span>
-                </span>
-                {stats.pending > 0 && (
-                  <span style={{ color: 'var(--tv-ink-tertiary)' }}>{stats.pending}</span>
-                )}
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              {/* 編集アクション */}
+              {memoRaw && currentPage && (
+                <div className="flex items-center gap-0.5">
+                  <button
+                    onClick={onUndo}
+                    disabled={!canUndo}
+                    className="p-1 rounded transition-all duration-150 disabled:opacity-30 disabled:cursor-default"
+                    style={{ color: 'var(--tv-ink-tertiary)' }}
+                    title="元に戻す (Ctrl+Z)"
+                    onMouseEnter={e => { if (canUndo) { e.currentTarget.style.color = 'var(--tv-accent)'; e.currentTarget.style.background = 'var(--tv-accent-wash)'; } }}
+                    onMouseLeave={e => { e.currentTarget.style.color = 'var(--tv-ink-tertiary)'; e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <Undo2 size={12} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (isFullEditing) {
+                        handleFullEditApply();
+                      } else if (currentPage) {
+                        setEditText(currentPage.memoText);
+                        setIsFullEditing(true);
+                        setIsSplitEditing(false);
+                        setEditingBlockIndex(null);
+                      }
+                    }}
+                    className="p-1 rounded transition-all duration-150"
+                    style={{
+                      color: isFullEditing ? 'var(--tv-accent)' : 'var(--tv-ink-tertiary)',
+                      background: isFullEditing ? 'var(--tv-accent-wash)' : 'transparent',
+                    }}
+                    title={isFullEditing ? '編集を適用' : 'メモ全体を編集'}
+                    onMouseEnter={e => { if (!isFullEditing) { e.currentTarget.style.color = 'var(--tv-accent)'; e.currentTarget.style.background = 'var(--tv-accent-wash)'; } }}
+                    onMouseLeave={e => { if (!isFullEditing) { e.currentTarget.style.color = 'var(--tv-ink-tertiary)'; e.currentTarget.style.background = 'transparent'; } }}
+                  >
+                    {isFullEditing ? <PencilOff size={12} /> : <Pencil size={12} />}
+                  </button>
+                  {memoFilePath && (
+                    <button
+                      onClick={() => onSaveMemo()}
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-all duration-150"
+                      style={{
+                        color: hasUnsavedChanges ? 'var(--tv-accent)' : 'var(--tv-ink-tertiary)',
+                        background: hasUnsavedChanges ? 'var(--tv-accent-wash)' : 'transparent',
+                        border: hasUnsavedChanges ? '1px solid rgba(58,112,112,0.2)' : '1px solid transparent',
+                      }}
+                      title="メモを保存 (Ctrl+S)"
+                      onMouseEnter={e => { e.currentTarget.style.background = 'var(--tv-accent-wash)'; e.currentTarget.style.color = 'var(--tv-accent)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = hasUnsavedChanges ? 'var(--tv-accent-wash)' : 'transparent'; e.currentTarget.style.color = hasUnsavedChanges ? 'var(--tv-accent)' : 'var(--tv-ink-tertiary)'; }}
+                    >
+                      <Save size={11} />
+                      保存
+                      {hasUnsavedChanges && (
+                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-orange-400" />
+                      )}
+                    </button>
+                  )}
+                </div>
+              )}
+              {/* 統計 */}
+              {stats.total > 0 && (
+                <div className="flex items-center gap-3 text-[10px]">
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#4a9a5a]" />
+                    <span style={{ color: 'var(--tv-ink-secondary)' }}>{stats.matched}</span>
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#c45a5a]" />
+                    <span style={{ color: 'var(--tv-ink-secondary)' }}>{stats.mismatched}</span>
+                  </span>
+                  {stats.pending > 0 && (
+                    <span style={{ color: 'var(--tv-ink-tertiary)' }}>{stats.pending}</span>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* メモ未読込 — ドロップゾーン */}
@@ -866,8 +1066,66 @@ export default function TextVerifyViewer({
                 )}
               </div>
 
-              {/* レイヤー詳細表示 */}
-              {viewMode === 'layers' ? (
+              {/* 全体エディタモード */}
+              {isFullEditing ? (
+                <div
+                  className="flex-1 flex flex-col overflow-hidden p-3"
+                  onBlur={e => {
+                    // フォーカスがこのコンテナ外に移った場合に適用して閉じる
+                    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                      handleFullEditApply();
+                    }
+                  }}
+                >
+                  {currentPage.memoShared && (
+                    <div className="mb-2 px-2.5 py-1.5 rounded text-[10px] flex items-center gap-1.5"
+                      style={{ color: 'var(--tv-ink-secondary)', background: 'rgba(200,160,60,0.08)', border: '1px solid rgba(200,160,60,0.2)' }}
+                    >
+                      <AlertTriangle size={10} style={{ color: 'rgba(200,160,60,0.7)' }} />
+                      このメモは P{currentPage.memoSharedGroup.join(', P')} で共有されています。変更は全ページに反映されます。
+                    </div>
+                  )}
+                  <textarea
+                    ref={textareaRef}
+                    value={editText}
+                    onChange={e => setEditText(e.target.value)}
+                    className="flex-1 w-full resize-none text-[13px] leading-[1.8] font-mono p-3 rounded-md outline-none"
+                    style={{
+                      background: 'var(--tv-paper-warm)',
+                      color: 'var(--tv-ink)',
+                      border: '2px solid var(--tv-accent)',
+                    }}
+                    autoFocus
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                        e.preventDefault();
+                        handleFullEditApply();
+                      }
+                    }}
+                  />
+                  <div className="flex gap-2 mt-2 justify-end shrink-0">
+                    <button
+                      onClick={() => setIsFullEditing(false)}
+                      className="px-3 py-1 rounded text-[11px] font-medium transition-colors"
+                      style={{ color: 'var(--tv-ink-secondary)', background: 'rgba(0,0,0,0.04)', border: '1px solid var(--tv-rule)' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,0,0,0.08)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'rgba(0,0,0,0.04)'; }}
+                    >
+                      キャンセル
+                    </button>
+                    <button
+                      onClick={handleFullEditApply}
+                      className="px-3 py-1 rounded text-[11px] font-medium transition-colors"
+                      style={{ color: '#fff', background: 'var(--tv-accent)', border: '1px solid var(--tv-accent)' }}
+                      onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; }}
+                      onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+                    >
+                      適用 <span className="text-[9px] opacity-60 ml-1">Ctrl+Enter</span>
+                    </button>
+                  </div>
+                </div>
+
+              ) : viewMode === 'layers' ? (
                 <div className="flex-1 overflow-y-auto px-4 py-3">
                   {currentPage.status === 'loading' ? (
                     <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--tv-ink-tertiary)' }}>
@@ -952,24 +1210,94 @@ export default function TextVerifyViewer({
                             );
                           }
                           if (entry.type === 'match') {
+                            if (editingBlockIndex === i) {
+                              return (
+                                <div key={i}>
+                                  {currentPage.memoShared && (
+                                    <div className="mb-1 px-2 py-1 rounded text-[10px] flex items-center gap-1"
+                                      style={{ color: 'var(--tv-ink-secondary)', background: 'rgba(200,160,60,0.08)', border: '1px solid rgba(200,160,60,0.15)' }}
+                                    >
+                                      <AlertTriangle size={9} style={{ color: 'rgba(200,160,60,0.7)' }} />
+                                      P{currentPage.memoSharedGroup.join(', P')} 共有
+                                    </div>
+                                  )}
+                                  <textarea
+                                    ref={textareaRef}
+                                    value={editText}
+                                    onChange={e => setEditText(e.target.value)}
+                                    onBlur={() => { if (cancellingRef.current) { cancellingRef.current = false; return; } handleInlineEditConfirm(); }}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Escape') { e.preventDefault(); cancellingRef.current = true; setEditingBlockIndex(null); }
+                                      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleInlineEditConfirm(); }
+                                    }}
+                                    className="w-full resize-none rounded-md px-2.5 py-1.5 text-[13px] leading-[1.8] font-mono outline-none"
+                                    style={{ background: 'var(--tv-paper-warm)', color: 'var(--tv-ink)', border: '2px solid var(--tv-accent)', minHeight: '2em' }}
+                                  />
+                                </div>
+                              );
+                            }
                             return (
-                              <div key={i} className="whitespace-pre-wrap break-all">{entry.text}</div>
+                              <div key={i}
+                                className="whitespace-pre-wrap break-all cursor-text rounded-sm transition-colors duration-100"
+                                onDoubleClick={(e) => { cursorOffsetRef.current = getClickOffset(e.currentTarget); const t = getMemoTextFromEntry(entry); if (t !== null) { setEditingBlockIndex(i); setEditText(t); } }}
+                                style={{ padding: '0 1px' }}
+                                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(58,112,112,0.04)'; }}
+                                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                              >
+                                {entry.text}
+                              </div>
                             );
                           }
                           // 改行変更のみ
                           if (entry.type === 'linebreak') {
                             const idx = diffIdx++;
                             const isCurrent = idx === currentDiffIdx;
+                            if (editingBlockIndex === i) {
+                              return (
+                                <div key={i} className="my-1">
+                                  <div className="px-2.5 py-1 rounded-t-md text-[12px] leading-[1.7] whitespace-pre-wrap break-all"
+                                    style={{ background: 'rgba(59,130,246,0.06)', color: 'var(--tv-ink-secondary)', border: '2px solid var(--tv-accent)', borderBottom: '1px dashed var(--tv-rule)' }}
+                                  >
+                                    <span className="text-[9px] font-semibold tracking-wide select-none mr-1.5" style={{ color: 'rgba(59,130,246,0.6)' }}>PSD</span>
+                                    {entry.psdText}
+                                  </div>
+                                  <div className="px-2.5 py-0.5 flex items-center gap-1.5"
+                                    style={{ borderLeft: '2px solid var(--tv-accent)', borderRight: '2px solid var(--tv-accent)', background: 'rgba(50,130,70,0.04)', borderTop: '1px dashed var(--tv-rule)' }}
+                                  >
+                                    <span className="text-[9px] font-semibold tracking-wide select-none" style={{ color: 'rgba(50,130,70,0.55)' }}>メモ</span>
+                                    {currentPage.memoShared && (
+                                      <span className="text-[9px] flex items-center gap-0.5" style={{ color: 'rgba(200,160,60,0.7)' }}>
+                                        <AlertTriangle size={8} />
+                                        P{currentPage.memoSharedGroup.join(', P')} 共有
+                                      </span>
+                                    )}
+                                  </div>
+                                  <textarea
+                                    ref={textareaRef}
+                                    value={editText}
+                                    onChange={e => setEditText(e.target.value)}
+                                    onBlur={() => { if (cancellingRef.current) { cancellingRef.current = false; return; } handleInlineEditConfirm(); }}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Escape') { e.preventDefault(); cancellingRef.current = true; setEditingBlockIndex(null); }
+                                      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleInlineEditConfirm(); }
+                                    }}
+                                    className="w-full resize-none rounded-b-md px-2.5 py-1.5 text-[13px] leading-[1.8] font-mono outline-none"
+                                    style={{ background: 'var(--tv-paper-warm)', color: 'var(--tv-ink)', border: '2px solid var(--tv-accent)', borderTop: 'none', minHeight: '2em' }}
+                                  />
+                                </div>
+                              );
+                            }
                             return (
                               <div
                                 key={i}
                                 data-diff-idx={idx}
-                                className="my-1 rounded-md overflow-hidden transition-all duration-200"
+                                className="my-1 rounded-md overflow-hidden transition-all duration-200 cursor-text"
                                 style={{
                                   background: isCurrent ? 'rgba(59,130,246,0.08)' : 'rgba(59,130,246,0.03)',
                                   border: `1px solid ${isCurrent ? 'rgba(59,130,246,0.4)' : 'rgba(59,130,246,0.15)'}`,
                                   boxShadow: isCurrent ? '0 0 0 1px rgba(59,130,246,0.25)' : undefined,
                                 }}
+                                onDoubleClick={(e) => { cursorOffsetRef.current = getClickOffset(e.currentTarget); const t = getMemoTextFromEntry(entry); if (t !== null) { setEditingBlockIndex(i); setEditText(t); } }}
                               >
                                 <div className="px-2.5 pt-1 pb-0" style={{ borderBottom: '1px solid rgba(59,130,246,0.12)' }}>
                                   <span className="flex items-center gap-1 text-[9px] font-semibold tracking-wide select-none" style={{ color: 'rgba(59,130,246,0.6)' }}>
@@ -1010,16 +1338,55 @@ export default function TextVerifyViewer({
                           }
                           const idx = diffIdx++;
                           const isCurrent = idx === currentDiffIdx;
+                          if (editingBlockIndex === i) {
+                            const psdRef = getPsdTextFromEntry(entry);
+                            return (
+                              <div key={i} className="my-1">
+                                {psdRef && (
+                                  <div className="px-2.5 py-1 rounded-t-md text-[12px] leading-[1.7] whitespace-pre-wrap break-all"
+                                    style={{ background: 'rgba(194,90,90,0.06)', color: 'var(--tv-ink-secondary)', border: '2px solid var(--tv-accent)', borderBottom: '1px dashed var(--tv-rule)' }}
+                                  >
+                                    <span className="text-[9px] font-semibold tracking-wide select-none mr-1.5" style={{ color: 'rgba(160,70,70,0.6)' }}>PSD</span>
+                                    {psdRef}
+                                  </div>
+                                )}
+                                <div className="px-2.5 py-0.5 flex items-center gap-1.5"
+                                  style={{ borderLeft: '2px solid var(--tv-accent)', borderRight: '2px solid var(--tv-accent)', background: 'rgba(50,130,70,0.04)', borderTop: '1px dashed var(--tv-rule)' }}
+                                >
+                                  <span className="text-[9px] font-semibold tracking-wide select-none" style={{ color: 'rgba(50,130,70,0.55)' }}>メモ</span>
+                                  {currentPage.memoShared && (
+                                    <span className="text-[9px] flex items-center gap-0.5" style={{ color: 'rgba(200,160,60,0.7)' }}>
+                                      <AlertTriangle size={8} />
+                                      P{currentPage.memoSharedGroup.join(', P')} 共有
+                                    </span>
+                                  )}
+                                </div>
+                                <textarea
+                                  ref={textareaRef}
+                                  value={editText}
+                                  onChange={e => setEditText(e.target.value)}
+                                  onBlur={() => { if (cancellingRef.current) { cancellingRef.current = false; return; } handleInlineEditConfirm(); }}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Escape') { e.preventDefault(); cancellingRef.current = true; setEditingBlockIndex(null); }
+                                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleInlineEditConfirm(); }
+                                  }}
+                                  className={`w-full resize-none px-2.5 py-1.5 text-[13px] leading-[1.8] font-mono outline-none ${psdRef ? 'rounded-b-md' : 'rounded-md'}`}
+                                  style={{ background: 'var(--tv-paper-warm)', color: 'var(--tv-ink)', border: '2px solid var(--tv-accent)', borderTop: 'none', minHeight: '2em' }}
+                                />
+                              </div>
+                            );
+                          }
                           return (
                             <div
                               key={i}
                               data-diff-idx={idx}
-                              className="my-1 rounded-md overflow-hidden transition-all duration-200"
+                              className={`my-1 rounded-md overflow-hidden transition-all duration-200${entry.memoParts ? ' cursor-text' : ''}`}
                               style={{
                                 background: isCurrent ? 'rgba(210,170,80,0.10)' : 'var(--tv-paper-warm)',
                                 border: `1px solid ${isCurrent ? 'rgba(200,160,60,0.5)' : 'var(--tv-rule)'}`,
                                 boxShadow: isCurrent ? '0 0 0 1px rgba(200,160,60,0.35), 0 1px 4px rgba(200,160,60,0.12)' : undefined,
                               }}
+                              onDoubleClick={entry.memoParts ? (e) => { cursorOffsetRef.current = getClickOffset(e.currentTarget); const t = getMemoTextFromEntry(entry); if (t !== null) { setEditingBlockIndex(i); setEditText(t); } } : undefined}
                             >
                               {/* 差分ヘッダー */}
                               <div className="px-2.5 pt-1 pb-0"
@@ -1036,6 +1403,7 @@ export default function TextVerifyViewer({
                                 <div className="px-2.5 py-1 whitespace-pre-wrap break-all"
                                 >
                                   {entry.psdParts.map((p, pi) =>
+                                    !p.value ? null :
                                     p.removed
                                       ? <span key={pi} style={{ background: 'rgba(194,90,90,0.18)', color: '#8a2020', borderRadius: '2px', padding: '0 2px' }}>{p.value}</span>
                                       : <span key={pi}>{p.value}</span>
@@ -1052,6 +1420,7 @@ export default function TextVerifyViewer({
                                   style={{ borderTop: entry.psdParts ? '1px dashed var(--tv-rule)' : undefined }}
                                 >
                                   {entry.memoParts.map((p, mi) =>
+                                    !p.value ? null :
                                     p.added
                                       ? <span key={mi} style={{ background: 'rgba(60,150,80,0.16)', color: '#1a6030', borderRadius: '2px', padding: '0 2px' }}>{p.value}</span>
                                       : <span key={mi}>{p.value}</span>
@@ -1097,8 +1466,59 @@ export default function TextVerifyViewer({
                     <div className="px-4 py-1 shrink-0" style={{ background: 'var(--tv-header)', borderBottom: '1px solid var(--tv-rule)' }}>
                       <span className="text-[10px] font-medium tracking-wide uppercase" style={{ color: 'var(--tv-ink-tertiary)' }}>Memo</span>
                     </div>
-                    <div className="flex-1 overflow-y-auto px-4 py-3">
-                      {!currentPage.memoText ? (
+                    <div
+                      className="flex-1 overflow-y-auto px-4 py-3 cursor-text"
+                      onDoubleClick={() => {
+                        if (!isSplitEditing && currentPage?.memoText) {
+                          setIsSplitEditing(true);
+                          setEditText(currentPage.memoText);
+                        }
+                      }}
+                    >
+                      {isSplitEditing ? (
+                        <div className="flex flex-col h-full">
+                          {currentPage.memoShared && (
+                            <div className="mb-2 px-2.5 py-1.5 rounded text-[10px] flex items-center gap-1.5"
+                              style={{ color: 'var(--tv-ink-secondary)', background: 'rgba(200,160,60,0.08)', border: '1px solid rgba(200,160,60,0.2)' }}
+                            >
+                              <AlertTriangle size={10} style={{ color: 'rgba(200,160,60,0.7)' }} />
+                              P{currentPage.memoSharedGroup.join(', P')} で共有 — 変更は全ページに反映
+                            </div>
+                          )}
+                          <textarea
+                            ref={textareaRef}
+                            value={editText}
+                            onChange={e => setEditText(e.target.value)}
+                            className="flex-1 w-full resize-none text-[13px] leading-[1.8] font-mono p-2 rounded-md outline-none"
+                            style={{ background: 'var(--tv-paper-warm)', color: 'var(--tv-ink)', border: '2px solid var(--tv-accent)' }}
+                            autoFocus
+                            onKeyDown={e => {
+                              if (e.key === 'Escape') { e.preventDefault(); setIsSplitEditing(false); }
+                              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); onUpdatePageMemo(currentIndex, editText); setIsSplitEditing(false); }
+                            }}
+                          />
+                          <div className="flex gap-2 mt-2 justify-end">
+                            <button
+                              onClick={() => setIsSplitEditing(false)}
+                              className="px-3 py-1 rounded text-[11px] font-medium transition-colors"
+                              style={{ color: 'var(--tv-ink-secondary)', background: 'rgba(0,0,0,0.04)', border: '1px solid var(--tv-rule)' }}
+                              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,0,0,0.08)'; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(0,0,0,0.04)'; }}
+                            >
+                              キャンセル
+                            </button>
+                            <button
+                              onClick={() => { onUpdatePageMemo(currentIndex, editText); setIsSplitEditing(false); }}
+                              className="px-3 py-1 rounded text-[11px] font-medium transition-colors"
+                              style={{ color: '#fff', background: 'var(--tv-accent)', border: '1px solid var(--tv-accent)' }}
+                              onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; }}
+                              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+                            >
+                              適用 <span className="text-[9px] opacity-60 ml-1">Ctrl+Enter</span>
+                            </button>
+                          </div>
+                        </div>
+                      ) : !currentPage.memoText ? (
                         <p className="text-xs" style={{ color: 'var(--tv-ink-tertiary)' }}>
                           このページに対応するメモテキストがありません
                         </p>

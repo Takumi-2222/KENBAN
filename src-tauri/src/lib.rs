@@ -1364,6 +1364,12 @@ fn read_text_file(path: String) -> Result<String, String> {
         .map_err(|e| format!("ファイル読み込みエラー: {}", e))
 }
 
+#[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content.as_bytes())
+        .map_err(|e| format!("ファイル書き込みエラー: {}", e))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
@@ -1394,7 +1400,8 @@ pub fn run() {
             check_diff_simple,
             check_diff_heatmap,
             get_cli_args,
-            read_text_file
+            read_text_file,
+            write_text_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

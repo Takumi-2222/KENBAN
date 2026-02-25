@@ -708,3 +708,53 @@ function postProcessChunkBreaks(entries: UnifiedDiffEntry[]): UnifiedDiffEntry[]
   if (collapsed.length > 0 && collapsed[collapsed.length - 1].type === 'separator') collapsed.pop();
   return collapsed;
 }
+
+/**
+ * UnifiedDiffEntry からメモ側のテキストを抽出する
+ */
+export function getMemoTextFromEntry(entry: UnifiedDiffEntry): string | null {
+  switch (entry.type) {
+    case 'match': return entry.text ?? null;
+    case 'diff': return entry.memoParts?.map(p => p.value).join('') ?? null;
+    case 'linebreak': return entry.memoText ?? null;
+    default: return null;
+  }
+}
+
+/**
+ * UnifiedDiffEntry からPSD側のテキストを抽出する（編集時の参考表示用）
+ */
+export function getPsdTextFromEntry(entry: UnifiedDiffEntry): string | null {
+  switch (entry.type) {
+    case 'match': return entry.text ?? null;
+    case 'diff': return entry.psdParts?.map(p => p.value).join('') ?? null;
+    case 'linebreak': return entry.psdText ?? null;
+    default: return null;
+  }
+}
+
+/**
+ * 統合ビューのインライン編集後、全エントリからメモテキストを再構築する
+ * separator は空行2つ（再正規化時に CHUNK_BREAK になる）として復元
+ */
+export function reconstructMemoFromEntries(
+  entries: UnifiedDiffEntry[],
+  editedIndex: number,
+  newText: string
+): string {
+  const parts: string[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (entry.type === 'separator') {
+      parts.push('');  // join('\n') で \n\n になり、再正規化で CHUNK_BREAK に戻る
+      continue;
+    }
+    if (i === editedIndex) {
+      parts.push(newText);
+      continue;
+    }
+    const memoText = getMemoTextFromEntry(entry);
+    if (memoText !== null) parts.push(memoText);
+  }
+  return parts.join('\n');
+}

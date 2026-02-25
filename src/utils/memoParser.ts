@@ -8,9 +8,17 @@ interface DelimiterPattern {
   sequential?: boolean; // true = ページ番号なし、出現順に連番
 }
 
+export interface MemoSectionRange {
+  pageNums: number[];
+  text: string;           // trimmed content
+  rangeStart: number;     // デリミタ直後の位置 (inclusive, cleaned text内)
+  rangeEnd: number;       // 次のデリミタ直前 or 末尾 (exclusive, cleaned text内)
+}
+
 export interface ParsedMemo {
   pages: Map<number, string>;
   sharedPages: Map<number, number[]>;  // pageNum → そのセクションの全ページ番号リスト
+  sections: MemoSectionRange[];        // 位置情報付きセクション（編集用）
 }
 
 // ページ区切りパターン（優先順）
@@ -57,7 +65,7 @@ export function parseMemo(text: string): ParsedMemo {
   }
 
   // フォールバック: 空行2連続で区切り
-  return { pages: splitByDoubleNewline(cleaned), sharedPages: new Map() };
+  return splitByDoubleNewline(cleaned);
 }
 
 /**
@@ -91,21 +99,27 @@ export function detectDelimiterPattern(text: string): DelimiterPattern | null {
 function splitByPattern(text: string, pattern: DelimiterPattern): ParsedMemo {
   const result = new Map<number, string>();
   const sharedPages = new Map<number, number[]>();
+  const sections: MemoSectionRange[] = [];
   const globalRegex = new RegExp(pattern.regex.source, 'gm');
   const matches = [...text.matchAll(globalRegex)];
 
-  if (matches.length === 0) return { pages: result, sharedPages };
+  if (matches.length === 0) return { pages: result, sharedPages, sections };
 
   // 最初のデリミタの前にテキストがあれば追加
   const preText = text.slice(0, matches[0].index!).trim();
   const hasPreText = preText.length > 0;
 
   if (hasPreText) {
+    const preRangeStart = 0;
+    const preRangeEnd = matches[0].index!;
     if (pattern.sequential) {
-      result.set(1, preText); // 連番モード: 前テキストを1ページ目に
+      result.set(1, preText);
+      sections.push({ pageNums: [1], text: preText, rangeStart: preRangeStart, rangeEnd: preRangeEnd });
     } else {
       const firstPage = pattern.extractPage(matches[0]);
-      result.set(Math.max(1, firstPage - 1), preText);
+      const pageNum = Math.max(1, firstPage - 1);
+      result.set(pageNum, preText);
+      sections.push({ pageNums: [pageNum], text: preText, rangeStart: preRangeStart, rangeEnd: preRangeEnd });
     }
   }
 
@@ -118,6 +132,7 @@ function splitByPattern(text: string, pattern: DelimiterPattern): ParsedMemo {
     if (pattern.sequential) {
       const pageNum = i + 1 + (hasPreText ? 1 : 0);
       result.set(pageNum, pageText);
+      sections.push({ pageNums: [pageNum], text: pageText, rangeStart: startPos, rangeEnd: endPos });
     } else if (pattern.extractPages) {
       // 複数ページ区切り: 全ページに同じテキストをセット
       const pageNums = pattern.extractPages(match);
@@ -125,30 +140,46 @@ function splitByPattern(text: string, pattern: DelimiterPattern): ParsedMemo {
         result.set(pn, pageText);
         sharedPages.set(pn, pageNums);
       }
+      sections.push({ pageNums: [...pageNums], text: pageText, rangeStart: startPos, rangeEnd: endPos });
     } else {
       const pageNum = pattern.extractPage(match);
       result.set(pageNum, pageText);
+      sections.push({ pageNums: [pageNum], text: pageText, rangeStart: startPos, rangeEnd: endPos });
     }
   }
 
-  return { pages: result, sharedPages };
+  return { pages: result, sharedPages, sections };
 }
 
 /**
  * 空行2連続でページ区切り（フォールバック）
  */
-function splitByDoubleNewline(text: string): Map<number, string> {
+function splitByDoubleNewline(text: string): ParsedMemo {
   const result = new Map<number, string>();
-  const sections = text.split(/\n\s*\n\s*\n/);
+  const sections: MemoSectionRange[] = [];
+  const regex = /\n\s*\n\s*\n/g;
+  let lastEnd = 0;
+  let pageNum = 1;
+  let match: RegExpExecArray | null;
 
-  sections.forEach((section, index) => {
-    const trimmed = section.trim();
-    if (trimmed) {
-      result.set(index + 1, trimmed);
+  while ((match = regex.exec(text)) !== null) {
+    const sectionText = text.slice(lastEnd, match.index).trim();
+    if (sectionText) {
+      result.set(pageNum, sectionText);
+      sections.push({ pageNums: [pageNum], text: sectionText, rangeStart: lastEnd, rangeEnd: match.index });
+      pageNum++;
     }
-  });
+    lastEnd = match.index + match[0].length;
+  }
 
-  return result;
+  // 最後のセクション
+  const lastSection = text.slice(lastEnd).trim();
+  if (lastSection) {
+    result.set(pageNum, lastSection);
+    sections.push({ pageNums: [pageNum], text: lastSection, rangeStart: lastEnd, rangeEnd: text.length });
+  }
+
+  return { pages: result, sharedPages: new Map(), sections };
 }
 
 /**
@@ -181,6 +212,26 @@ export function getUniqueMemoSections(parsedMemo: ParsedMemo): MemoSection[] {
   }
 
   return sections;
+}
+
+/**
+ * メモのセクションテキストを差し替える
+ * デリミタ構造を保持しつつ、指定ページのコンテンツだけを書き換える
+ */
+export function replaceMemoSection(
+  raw: string,
+  sections: MemoSectionRange[],
+  pageNum: number,
+  newText: string
+): string {
+  const section = sections.find(s => s.pageNums.includes(pageNum));
+  if (!section) return raw;
+  const rawSlice = raw.slice(section.rangeStart, section.rangeEnd);
+  const leadingWS = rawSlice.match(/^(\s*)/)?.[1] || '\n';
+  const trailingWS = rawSlice.match(/(\s*)$/)?.[1] || '\n';
+  return raw.slice(0, section.rangeStart)
+    + leadingWS + newText.trim() + trailingWS
+    + raw.slice(section.rangeEnd);
 }
 
 /**
