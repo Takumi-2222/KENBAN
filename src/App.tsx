@@ -4,7 +4,7 @@ import { CheckCircle, AlertTriangle, Loader2, RefreshCw, Download } from 'lucide
 import { pdfCache, checkPdfFileSize, globalOptimizeProgress, setOptimizeProgressCallback } from './utils/pdf';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { readFile as tauriReadFile, readDir } from '@tauri-apps/plugin-fs';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open, ask } from '@tauri-apps/plugin-dialog';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
@@ -70,6 +70,7 @@ export default function MangaDiffDetector() {
   const [parallelCurrentIndex, setParallelCurrentIndex] = useState(0);
   const [parallelIndexA, setParallelIndexA] = useState(0); // 非同期モード用の個別インデックス
   const [parallelIndexB, setParallelIndexB] = useState(0); // 非同期モード用の個別インデックス
+  const prevParallelIndexRef = useRef(0); // ナビゲーション方向検知用
   const [parallelSyncMode, setParallelSyncMode] = useState(true); // 同期モード（デフォルト）
   const [parallelActivePanel, setParallelActivePanel] = useState<'A' | 'B'>('A'); // 非同期モードでアクティブなパネル
   const [showSyncOptions, setShowSyncOptions] = useState(false); // 再同期オプション表示
@@ -1763,10 +1764,10 @@ export default function MangaDiffDetector() {
 
         // diffCacheにある分だけキャッシュに追加（新規変換は行わない）
         if (pageData?.srcA) {
-          newCache[cacheKeyA] = { dataUrl: pageData.srcA, width: 0, height: 0 };
+          newCache[cacheKeyA] = { imageUrl: pageData.srcA, width: 0, height: 0 };
         }
         if (pageData?.srcB) {
-          newCache[cacheKeyB] = { dataUrl: pageData.srcB, width: 0, height: 0 };
+          newCache[cacheKeyB] = { imageUrl: pageData.srcB, width: 0, height: 0 };
         }
       }
 
@@ -1849,7 +1850,7 @@ export default function MangaDiffDetector() {
             const cacheKey = `${fileWithPath.filePath}:${maxWidth}x${maxHeight}`;
             setParallelImageCache(prev => ({
               ...prev,
-              [cacheKey]: { dataUrl: pair.processedA!, width: 0, height: 0 },
+              [cacheKey]: { imageUrl: pair.processedA!, width: 0, height: 0 },
             }));
           }
         }
@@ -1872,7 +1873,7 @@ export default function MangaDiffDetector() {
             const cacheKey = `${fileWithPath.filePath}:${maxWidth}x${maxHeight}`;
             setParallelImageCache(prev => ({
               ...prev,
-              [cacheKey]: { dataUrl: pair.processedB!, width: 0, height: 0 },
+              [cacheKey]: { imageUrl: pair.processedB!, width: 0, height: 0 },
             }));
           }
         }
@@ -2147,6 +2148,12 @@ export default function MangaDiffDetector() {
     setParallelLoading(true);
     const { maxWidth, maxHeight } = getParallelDisplaySize();
 
+    // ナビゲーション方向を検知して先読みを即座に開始（現画像読み込みと並列）
+    const currentIdx = Math.max(parallelIndexA, parallelIndexB);
+    const direction = currentIdx >= prevParallelIndexRef.current ? 'forward' : 'backward';
+    prevParallelIndexRef.current = currentIdx;
+    preloadParallelImages(currentIdx, maxWidth, maxHeight, undefined, undefined, direction);
+
     try {
       // 両方の画像を並列で読み込み
       const [imageA, imageB] = await Promise.all([
@@ -2156,9 +2163,6 @@ export default function MangaDiffDetector() {
 
       setParallelImageA(imageA);
       setParallelImageB(imageB);
-
-      // 先読み（前後5件）
-      preloadParallelImages(Math.max(parallelIndexA, parallelIndexB), maxWidth, maxHeight);
     } catch (err) {
       console.error('Parallel image load error:', err);
     }
@@ -2185,7 +2189,7 @@ export default function MangaDiffDetector() {
 
     // フロントエンドキャッシュチェック
     if (useCache && parallelImageCache[cacheKey]) {
-      return parallelImageCache[cacheKey].dataUrl;
+      return parallelImageCache[cacheKey].imageUrl;
     }
 
     try {
@@ -2213,21 +2217,22 @@ export default function MangaDiffDetector() {
 
         setParallelImageCache(prev => ({
           ...prev,
-          [cacheKey]: { dataUrl, width: 0, height: 0 }, // サイズは後で取得可能
+          [cacheKey]: { imageUrl: dataUrl, width: 0, height: 0 }, // サイズは後で取得可能
         }));
         return dataUrl;
       } else if (entry.type === 'psd') {
-        // PSDはRust側で処理
-        const result = await invoke<{ data_url: string; width: number; height: number }>('parse_psd', { path: entry.path });
+        // PSDはRust側で処理 → tempファイルパスが返る
+        const result = await invoke<{ file_url: string; width: number; height: number }>('parse_psd', { path: entry.path });
+        const assetUrl = convertFileSrc(result.file_url);
         setParallelImageCache(prev => ({
           ...prev,
-          [cacheKey]: { dataUrl: result.data_url, width: result.width, height: result.height },
+          [cacheKey]: { imageUrl: assetUrl, width: result.width, height: result.height },
         }));
-        return result.data_url;
+        return assetUrl;
       } else {
-        // TIFF/PNG/JPGはRust側で高速処理
+        // TIFF/PNG/JPGはRust側で高速処理 → tempファイルパスが返る
         const result = await invoke<{
-          data_url: string;
+          file_url: string;
           width: number;
           height: number;
         }>('decode_and_resize_image', {
@@ -2236,11 +2241,12 @@ export default function MangaDiffDetector() {
           maxHeight,
         });
 
+        const assetUrl = convertFileSrc(result.file_url);
         setParallelImageCache(prev => ({
           ...prev,
-          [cacheKey]: { dataUrl: result.data_url, width: result.width, height: result.height },
+          [cacheKey]: { imageUrl: assetUrl, width: result.width, height: result.height },
         }));
-        return result.data_url;
+        return assetUrl;
       }
     } catch (err) {
       console.error('Image load error:', entry.path, err);
@@ -2248,86 +2254,72 @@ export default function MangaDiffDetector() {
     }
   };
 
-  // 先読み処理（PSD対応 + 並列化）
+  // 先読み処理（方向検知 + 優先度付き + PSD並列化）
   const preloadParallelImages = useCallback(async (
     currentIdx: number,
     maxWidth: number,
     maxHeight: number,
     filesA: ParallelFileEntry[] = parallelFilesA,
-    filesB: ParallelFileEntry[] = parallelFilesB
+    filesB: ParallelFileEntry[] = parallelFilesB,
+    direction: 'forward' | 'backward' = 'forward'
   ) => {
     const preloadRange = 5;
-    const pathsToPreload: string[] = [];
-    const psdEntriesToPreload: ParallelFileEntry[] = [];
+    // 優先度付きパスリスト（先頭が最優先）
+    const prioritizedPaths: string[] = [];
+    const prioritizedPsdPaths: string[] = [];
 
+    // 方向に応じて優先側を先に処理（offset 1から順に、進行方向を優先）
     for (let offset = 1; offset <= preloadRange; offset++) {
-      const nextIdx = currentIdx + offset;
-      const prevIdx = currentIdx - offset;
+      const primaryIdx = direction === 'forward' ? currentIdx + offset : currentIdx - offset;
+      const secondaryIdx = direction === 'forward' ? currentIdx - offset : currentIdx + offset;
 
-      // A側
-      if (nextIdx < filesA.length) {
-        const entry = filesA[nextIdx];
-        if (entry.type === 'psd') {
-          psdEntriesToPreload.push(entry);
-        } else if (entry.type !== 'pdf') {
-          pathsToPreload.push(entry.path);
-        }
-      }
-      if (prevIdx >= 0) {
-        const entry = filesA[prevIdx];
-        if (entry.type === 'psd') {
-          psdEntriesToPreload.push(entry);
-        } else if (entry.type !== 'pdf') {
-          pathsToPreload.push(entry.path);
-        }
-      }
-
-      // B側
-      if (nextIdx < filesB.length) {
-        const entry = filesB[nextIdx];
-        if (entry.type === 'psd') {
-          psdEntriesToPreload.push(entry);
-        } else if (entry.type !== 'pdf') {
-          pathsToPreload.push(entry.path);
-        }
-      }
-      if (prevIdx >= 0) {
-        const entry = filesB[prevIdx];
-        if (entry.type === 'psd') {
-          psdEntriesToPreload.push(entry);
-        } else if (entry.type !== 'pdf') {
-          pathsToPreload.push(entry.path);
-        }
-      }
-    }
-
-    // TIFF/PNG/JPGをRust側で並列先読み
-    if (pathsToPreload.length > 0) {
-      invoke('preload_images', { paths: pathsToPreload, maxWidth, maxHeight }).catch(console.error);
-    }
-
-    // PSDをTypeScript側で先読み（バックグラウンド）
-    if (psdEntriesToPreload.length > 0) {
-      // 重複除去
-      const uniquePsdPaths = [...new Set(psdEntriesToPreload.map(e => e.path))];
-      for (const path of uniquePsdPaths) {
-        const cacheKey = `${path}:${maxWidth}x${maxHeight}`;
-        // 既にキャッシュにあればスキップ
-        if (parallelImageCache[cacheKey]) continue;
-
-        // バックグラウンドで先読み（awaitしない）
-        (async () => {
-          try {
-            const result = await invoke<{ data_url: string; width: number; height: number }>('parse_psd', { path });
-            setParallelImageCache(prev => ({
-              ...prev,
-              [cacheKey]: { dataUrl: result.data_url, width: result.width, height: result.height },
-            }));
-          } catch (err) {
-            console.error('PSD preload error:', path, err);
+      // 優先方向（進行方向側）
+      for (const files of [filesA, filesB]) {
+        if (primaryIdx >= 0 && primaryIdx < files.length) {
+          const entry = files[primaryIdx];
+          if (entry.type === 'psd') {
+            if (!prioritizedPsdPaths.includes(entry.path)) prioritizedPsdPaths.push(entry.path);
+          } else if (entry.type !== 'pdf') {
+            if (!prioritizedPaths.includes(entry.path)) prioritizedPaths.push(entry.path);
           }
-        })();
+        }
       }
+
+      // 逆方向
+      for (const files of [filesA, filesB]) {
+        if (secondaryIdx >= 0 && secondaryIdx < files.length) {
+          const entry = files[secondaryIdx];
+          if (entry.type === 'psd') {
+            if (!prioritizedPsdPaths.includes(entry.path)) prioritizedPsdPaths.push(entry.path);
+          } else if (entry.type !== 'pdf') {
+            if (!prioritizedPaths.includes(entry.path)) prioritizedPaths.push(entry.path);
+          }
+        }
+      }
+    }
+
+    // TIFF/PNG/JPGをRust側で並列先読み（優先度順のパスリスト）
+    if (prioritizedPaths.length > 0) {
+      invoke('preload_images', { paths: prioritizedPaths, maxWidth, maxHeight }).catch(console.error);
+    }
+
+    // PSDを優先度順に先読み（バックグラウンド）
+    for (const path of prioritizedPsdPaths) {
+      const cacheKey = `${path}:${maxWidth}x${maxHeight}`;
+      if (parallelImageCache[cacheKey]) continue;
+
+      (async () => {
+        try {
+          const result = await invoke<{ file_url: string; width: number; height: number }>('parse_psd', { path });
+          const assetUrl = convertFileSrc(result.file_url);
+          setParallelImageCache(prev => ({
+            ...prev,
+            [cacheKey]: { imageUrl: assetUrl, width: result.width, height: result.height },
+          }));
+        } catch (err) {
+          console.error('PSD preload error:', path, err);
+        }
+      })();
     }
   }, [parallelFilesA, parallelFilesB, parallelImageCache]);
 
@@ -2883,9 +2875,10 @@ export default function MangaDiffDetector() {
     const page = textVerifyPagesRef.current[idx];
     if (!page || page.imageSrc || page.status !== 'done') return false;
     try {
-      const result = await invoke<{ data_url: string; width: number; height: number }>('parse_psd_preview', { path: page.filePath, maxWidth: 1200 });
+      const result = await invoke<{ file_url: string; width: number; height: number }>('parse_psd_preview', { path: page.filePath, maxWidth: 1200 });
+      const assetUrl = convertFileSrc(result.file_url);
       setTextVerifyPages(prev => prev.map((p, i) =>
-        i === idx ? { ...p, imageSrc: result.data_url } : p
+        i === idx ? { ...p, imageSrc: assetUrl } : p
       ));
       return true;
     } catch {

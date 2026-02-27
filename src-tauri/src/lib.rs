@@ -4,7 +4,9 @@ use image::imageops::FilterType;
 use psd::Psd;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::panic;
 use std::path::PathBuf;
@@ -14,9 +16,11 @@ use tauri::State;
 
 // ============== 画像キャッシュ ==============
 struct CachedImage {
-    data: Vec<u8>,  // PNG bytes
+    file_path: String,  // temp JPEG ファイルパス
     width: u32,
     height: u32,
+    original_width: u32,
+    original_height: u32,
 }
 
 struct ImageCache {
@@ -61,28 +65,94 @@ struct AppState {
     cli_args: Vec<String>,
 }
 
+// ============== tempファイルヘルパー ==============
+
+/// キャッシュキーからハッシュベースのファイル名を生成
+fn cache_key_to_filename(cache_key: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    cache_key.hash(&mut hasher);
+    let hash = hasher.finish();
+    format!("kenban_preview_{:016x}.jpg", hash)
+}
+
+/// temp ディレクトリ内の kenban_preview サブフォルダを取得（なければ作成）
+fn get_kenban_temp_dir() -> Result<PathBuf, String> {
+    let temp = std::env::temp_dir().join("kenban_preview");
+    if !temp.exists() {
+        fs::create_dir_all(&temp)
+            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    }
+    Ok(temp)
+}
+
+/// DynamicImage を JPEG 85% で temp ファイルに書き出し、パスを返す
+/// 既にファイルが存在すればスキップ（ディスクキャッシュヒット）
+fn write_image_to_temp(img: &DynamicImage, cache_key: &str) -> Result<(String, u32, u32), String> {
+    let temp_dir = get_kenban_temp_dir()?;
+    let filename = cache_key_to_filename(cache_key);
+    let file_path = temp_dir.join(&filename);
+
+    let (w, h) = img.dimensions();
+
+    // 既にファイルが存在すればスキップ
+    if file_path.exists() {
+        return Ok((file_path.to_string_lossy().to_string(), w, h));
+    }
+
+    // RGBA → RGB 変換して JPEG エンコード
+    let rgb_img = DynamicImage::ImageRgb8(img.to_rgb8());
+    let mut jpeg_data = Cursor::new(Vec::new());
+    rgb_img.write_to(&mut jpeg_data, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
+
+    // アトミック書き込み（一時ファイル→リネーム）
+    let tmp_path = temp_dir.join(format!("{}.tmp", filename));
+    fs::write(&tmp_path, jpeg_data.get_ref())
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+    fs::rename(&tmp_path, &file_path)
+        .map_err(|e| format!("Failed to rename temp file: {}", e))?;
+
+    Ok((file_path.to_string_lossy().to_string(), w, h))
+}
+
 // ============== 画像処理結果 ==============
 #[derive(Serialize)]
 struct ImageResult {
-    data_url: String,
+    file_url: String,  // temp JPEG ファイルパス（フロントでasset://に変換）
     width: u32,
     height: u32,
     original_width: u32,
     original_height: u32,
 }
 
-// PSD解析結果（Base64 PNG画像として返す）
+// PSD解析結果
 #[derive(Serialize)]
 struct PsdImageResult {
-    data_url: String, // data:image/png;base64,... 形式
+    file_url: String,  // temp JPEG ファイルパス
     width: u32,
     height: u32,
 }
 
-// PSDファイルをパースしてBase64 PNG画像を返す
+// PSDファイルをパースしてtemp JPEGに書き出し、パスを返す
 // psd crateを優先し、panic時はフォールバックパーサーにフェイルオーバー
 #[tauri::command]
 fn parse_psd(path: String) -> Result<PsdImageResult, String> {
+    let cache_key = format!("psd:{}", path);
+
+    // ディスクキャッシュチェック
+    let temp_dir = get_kenban_temp_dir()?;
+    let filename = cache_key_to_filename(&cache_key);
+    let file_path = temp_dir.join(&filename);
+    if file_path.exists() {
+        let (w, h) = image::image_dimensions(&file_path)
+            .map_err(|e| format!("Failed to read image dimensions: {}", e))?;
+        return Ok(PsdImageResult {
+            file_url: file_path.to_string_lossy().to_string(),
+            width: w,
+            height: h,
+        });
+    }
+
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
 
     // まずpsd crateで試行
@@ -96,40 +166,39 @@ fn parse_psd(path: String) -> Result<PsdImageResult, String> {
             ImageBuffer::from_raw(width, height, rgba)
                 .ok_or_else(|| "Failed to create image buffer".to_string())?;
 
-        let mut png_data = Cursor::new(Vec::new());
-        img.write_to(&mut png_data, image::ImageFormat::Png)
-            .map_err(|e| format!("Failed to encode PNG: {}", e))?;
-
-        let base64_str = STANDARD.encode(png_data.get_ref());
-        let data_url = format!("data:image/png;base64,{}", base64_str);
-
-        Ok::<PsdImageResult, String>(PsdImageResult {
-            data_url,
-            width,
-            height,
-        })
+        Ok::<DynamicImage, String>(DynamicImage::ImageRgba8(img))
     }));
 
-    match result {
-        Ok(Ok(r)) => Ok(r),
-        _ => {
-            // psd crateが失敗/panic → フォールバックパーサーで再試行
-            let img = decode_psd_fallback(&bytes)?;
-            let (width, height) = img.dimensions();
-            let mut png_data = Cursor::new(Vec::new());
-            img.write_to(&mut png_data, image::ImageFormat::Png)
-                .map_err(|e| format!("Failed to encode PNG: {}", e))?;
-            let base64_str = STANDARD.encode(png_data.get_ref());
-            let data_url = format!("data:image/png;base64,{}", base64_str);
-            Ok(PsdImageResult { data_url, width, height })
-        }
-    }
+    let img = match result {
+        Ok(Ok(img)) => img,
+        _ => decode_psd_fallback(&bytes)?,
+    };
+    drop(bytes);
+
+    let (file_path_str, w, h) = write_image_to_temp(&img, &cache_key)?;
+    Ok(PsdImageResult { file_url: file_path_str, width: w, height: h })
 }
 
-// PSDファイルを軽量プレビュー画像として返す（リサイズ + JPEG）
-// テキスト照合モード用 — フル解像度不要な場面で ~1/50 のメモリ・転送量
+// PSDファイルを軽量プレビュー画像として返す（リサイズ + JPEG temp）
+// テキスト照合モード用 — フル解像度不要な場面
 #[tauri::command]
 fn parse_psd_preview(path: String, max_width: u32) -> Result<PsdImageResult, String> {
+    let cache_key = format!("psd_preview:{}:{}", path, max_width);
+
+    // ディスクキャッシュチェック
+    let temp_dir = get_kenban_temp_dir()?;
+    let filename = cache_key_to_filename(&cache_key);
+    let file_path = temp_dir.join(&filename);
+    if file_path.exists() {
+        let (w, h) = image::image_dimensions(&file_path)
+            .map_err(|e| format!("Failed to read image dimensions: {}", e))?;
+        return Ok(PsdImageResult {
+            file_url: file_path.to_string_lossy().to_string(),
+            width: w,
+            height: h,
+        });
+    }
+
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
 
     let img = {
@@ -149,7 +218,6 @@ fn parse_psd_preview(path: String, max_width: u32) -> Result<PsdImageResult, Str
             _ => decode_psd_fallback(&bytes)?,
         }
     };
-    // bytes はもう不要
     drop(bytes);
 
     let (orig_w, orig_h) = img.dimensions();
@@ -162,22 +230,8 @@ fn parse_psd_preview(path: String, max_width: u32) -> Result<PsdImageResult, Str
         img
     };
 
-    let (w, h) = resized.dimensions();
-
-    // JPEG エンコード（RGBA→RGB変換 → JPEG 品質85）
-    let rgb_img = DynamicImage::ImageRgb8(resized.to_rgb8());
-    let mut jpeg_data = Cursor::new(Vec::new());
-    rgb_img.write_to(&mut jpeg_data, image::ImageFormat::Jpeg)
-        .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
-
-    let base64_str = STANDARD.encode(jpeg_data.get_ref());
-    let data_url = format!("data:image/jpeg;base64,{}", base64_str);
-
-    Ok(PsdImageResult {
-        data_url,
-        width: w,
-        height: h,
-    })
+    let (file_path_str, w, h) = write_image_to_temp(&resized, &cache_key)?;
+    Ok(PsdImageResult { file_url: file_path_str, width: w, height: h })
 }
 
 // ファイルをシステムのデフォルトアプリで開く
@@ -303,8 +357,8 @@ fn open_pdf_in_mojiq(pdf_path: String, page: Option<u32>) -> Result<(), String> 
 
 // ============== 並列ビューモード用の高速画像処理 ==============
 
-// 画像をリサイズしてBase64 PNGとして返す（内部ヘルパー）
-fn resize_image_to_png(img: &DynamicImage, max_width: u32, max_height: u32) -> Result<(Vec<u8>, u32, u32), String> {
+// 画像をリサイズして temp JPEG に書き出し、パスを返す（内部ヘルパー）
+fn resize_and_write_to_temp(img: &DynamicImage, max_width: u32, max_height: u32, cache_key: &str) -> Result<(String, u32, u32), String> {
     let (orig_w, orig_h) = img.dimensions();
 
     // アスペクト比を保ちながらリサイズ
@@ -312,24 +366,17 @@ fn resize_image_to_png(img: &DynamicImage, max_width: u32, max_height: u32) -> R
     let scale_h = max_height as f64 / orig_h as f64;
     let scale = scale_w.min(scale_h).min(1.0); // 拡大はしない
 
-    let new_w = (orig_w as f64 * scale).round() as u32;
-    let new_h = (orig_h as f64 * scale).round() as u32;
-
-    // PNGエンコード（リサイズが必要な場合のみリサイズ）
-    let mut png_data = Cursor::new(Vec::new());
     if scale < 1.0 {
+        let new_w = (orig_w as f64 * scale).round() as u32;
+        let new_h = (orig_h as f64 * scale).round() as u32;
         let resized = img.resize(new_w, new_h, FilterType::Triangle);
-        resized.write_to(&mut png_data, image::ImageFormat::Png)
-            .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+        write_image_to_temp(&resized, cache_key)
     } else {
-        img.write_to(&mut png_data, image::ImageFormat::Png)
-            .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+        write_image_to_temp(img, cache_key)
     }
-
-    Ok((png_data.into_inner(), new_w, new_h))
 }
 
-// TIFF/PNG/JPG画像をデコード+リサイズして返す
+// TIFF/PNG/JPG画像をデコード+リサイズして返す（3層キャッシュ: メモリ→ディスク→生成）
 #[tauri::command]
 fn decode_and_resize_image(
     state: State<'_, AppState>,
@@ -337,45 +384,76 @@ fn decode_and_resize_image(
     max_width: u32,
     max_height: u32,
 ) -> Result<ImageResult, String> {
-    // キャッシュキー生成
     let cache_key = format!("{}:{}x{}", path, max_width, max_height);
 
-    // キャッシュチェック
+    // 1. メモリキャッシュチェック
     {
         let cache = state.image_cache.lock().map_err(|e| e.to_string())?;
         if let Some(cached) = cache.get(&cache_key) {
-            let base64_str = STANDARD.encode(&cached.data);
-            return Ok(ImageResult {
-                data_url: format!("data:image/png;base64,{}", base64_str),
-                width: cached.width,
-                height: cached.height,
-                original_width: cached.width, // キャッシュからは元サイズ不明
-                original_height: cached.height,
-            });
+            // ファイルがまだ存在するか確認
+            if PathBuf::from(&cached.file_path).exists() {
+                return Ok(ImageResult {
+                    file_url: cached.file_path.clone(),
+                    width: cached.width,
+                    height: cached.height,
+                    original_width: cached.original_width,
+                    original_height: cached.original_height,
+                });
+            }
+            // ファイルが消えていたらキャッシュを無効化（下で再生成）
         }
     }
 
-    // 画像読み込み
-    let img = image::open(&path)
-        .map_err(|e| format!("Failed to open image: {}", e))?;
+    // 2. ディスクキャッシュチェック（tempファイル存在確認）
+    let temp_dir = get_kenban_temp_dir()?;
+    let filename = cache_key_to_filename(&cache_key);
+    let file_path = temp_dir.join(&filename);
+    if file_path.exists() {
+        // ディスクにあるがメモリにない → 画像サイズだけ取得してメモリキャッシュ登録
+        // サイズ情報は元画像から取得する必要があるが、軽量化のためJPEGヘッダから取得
+        let (w, h) = image::image_dimensions(&file_path)
+            .map_err(|e| format!("Failed to read image dimensions: {}", e))?;
+        let file_path_str = file_path.to_string_lossy().to_string();
 
-    let (orig_w, orig_h) = img.dimensions();
+        // 元画像サイズも取得
+        let (orig_w, orig_h) = image::image_dimensions(&path)
+            .unwrap_or((w, h));
 
-    // リサイズ+PNGエンコード
-    let (png_data, new_w, new_h) = resize_image_to_png(&img, max_width, max_height)?;
-
-    // キャッシュに保存し、キャッシュからbase64エンコード（clone回避）
-    let base64_str = {
         let mut cache = state.image_cache.lock().map_err(|e| e.to_string())?;
         cache.insert(cache_key.clone(), CachedImage {
-            data: png_data,
-            width: new_w,
-            height: new_h,
+            file_path: file_path_str.clone(),
+            width: w,
+            height: h,
+            original_width: orig_w,
+            original_height: orig_h,
         });
-        STANDARD.encode(&cache.get(&cache_key).unwrap().data)
-    };
+        return Ok(ImageResult {
+            file_url: file_path_str,
+            width: w,
+            height: h,
+            original_width: orig_w,
+            original_height: orig_h,
+        });
+    }
+
+    // 3. フルデコード → temp書き出し → キャッシュ登録
+    let img = image::open(&path)
+        .map_err(|e| format!("Failed to open image: {}", e))?;
+    let (orig_w, orig_h) = img.dimensions();
+
+    let (file_path_str, new_w, new_h) = resize_and_write_to_temp(&img, max_width, max_height, &cache_key)?;
+
+    let mut cache = state.image_cache.lock().map_err(|e| e.to_string())?;
+    cache.insert(cache_key, CachedImage {
+        file_path: file_path_str.clone(),
+        width: new_w,
+        height: new_h,
+        original_width: orig_w,
+        original_height: orig_h,
+    });
+
     Ok(ImageResult {
-        data_url: format!("data:image/png;base64,{}", base64_str),
+        file_url: file_path_str,
         width: new_w,
         height: new_h,
         original_width: orig_w,
@@ -391,7 +469,7 @@ async fn preload_images(
     max_width: u32,
     max_height: u32,
 ) -> Result<Vec<String>, String> {
-    // 既にキャッシュにあるパスを除外
+    // 既にメモリキャッシュにあるパスを除外
     let paths_to_load: Vec<String> = {
         let cache = state.image_cache.lock().map_err(|e| e.to_string())?;
         paths.into_iter()
@@ -406,14 +484,30 @@ async fn preload_images(
         return Ok(vec!["all cached".to_string()]);
     }
 
-    // rayonで並列に画像を読み込み・リサイズ
-    let loaded: Vec<(String, Result<(Vec<u8>, u32, u32), String>)> = paths_to_load
+    // rayonで並列に画像を読み込み・リサイズ → tempファイルに書き出し
+    let loaded: Vec<(String, Result<(String, u32, u32, u32, u32), String>)> = paths_to_load
         .par_iter()
         .map(|path| {
+            let cache_key = format!("{}:{}x{}", path, max_width, max_height);
+
+            // ディスクキャッシュチェック
+            if let Ok(temp_dir) = get_kenban_temp_dir() {
+                let filename = cache_key_to_filename(&cache_key);
+                let file_path = temp_dir.join(&filename);
+                if file_path.exists() {
+                    if let Ok((w, h)) = image::image_dimensions(&file_path) {
+                        let (orig_w, orig_h) = image::image_dimensions(path.as_str()).unwrap_or((w, h));
+                        return (path.clone(), Ok((file_path.to_string_lossy().to_string(), w, h, orig_w, orig_h)));
+                    }
+                }
+            }
+
             let result = image::open(path)
                 .map_err(|e| format!("open error: {}", e))
                 .and_then(|img| {
-                    resize_image_to_png(&img, max_width, max_height)
+                    let (orig_w, orig_h) = img.dimensions();
+                    let (file_path_str, new_w, new_h) = resize_and_write_to_temp(&img, max_width, max_height, &cache_key)?;
+                    Ok((file_path_str, new_w, new_h, orig_w, orig_h))
                 });
             (path.clone(), result)
         })
@@ -426,11 +520,13 @@ async fn preload_images(
         for (path, result) in loaded {
             let cache_key = format!("{}:{}x{}", path, max_width, max_height);
             match result {
-                Ok((png_data, new_w, new_h)) => {
+                Ok((file_path_str, new_w, new_h, orig_w, orig_h)) => {
                     cache.insert(cache_key, CachedImage {
-                        data: png_data,
+                        file_path: file_path_str,
                         width: new_w,
                         height: new_h,
+                        original_width: orig_w,
+                        original_height: orig_h,
                     });
                     results.push(format!("loaded:{}", path));
                 }
@@ -448,6 +544,35 @@ fn clear_image_cache(state: State<'_, AppState>) -> Result<(), String> {
     let mut cache = state.image_cache.lock().map_err(|e| e.to_string())?;
     cache.clear();
     Ok(())
+}
+
+// tempフォルダのプレビューファイルをクリーンアップ（1時間以上前のファイルを削除）
+#[tauri::command]
+fn cleanup_preview_cache() -> Result<u32, String> {
+    let temp_dir = get_kenban_temp_dir()?;
+    let now = std::time::SystemTime::now();
+    let one_hour = std::time::Duration::from_secs(3600);
+    let mut deleted = 0u32;
+
+    if let Ok(entries) = fs::read_dir(&temp_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("jpg") {
+                if let Ok(metadata) = path.metadata() {
+                    if let Ok(modified) = metadata.modified() {
+                        if let Ok(age) = now.duration_since(modified) {
+                            if age > one_hour {
+                                let _ = fs::remove_file(&path);
+                                deleted += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(deleted)
 }
 
 // フォルダ内のファイル一覧を取得
@@ -1401,7 +1526,8 @@ pub fn run() {
             check_diff_heatmap,
             get_cli_args,
             read_text_file,
-            write_text_file
+            write_text_file,
+            cleanup_preview_cache
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -68,7 +68,7 @@ export interface ParallelFileEntry {
 
 export interface ParallelImageCache {
   [key: string]: {
-    dataUrl: string;
+    imageUrl: string;  // asset:// URL or data URL
     width: number;
     height: number;
   };
