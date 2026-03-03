@@ -482,9 +482,30 @@ export function computeSharedGroupDiff(
  * PSD抽出テキストに最もマッチするメモセクションを返す
  * ファイル名ベースの割り当てが間違っている場合にコンテンツベースで修正する
  */
+/**
+ * メモセクションの正規化済み行を事前計算するヘルパー
+ * reassignMemoSections で全ページ×全セクションの正規化を1回に削減する
+ */
+export interface PreNormalizedSection {
+  pageNums: number[];
+  text: string;
+  normalizedLines: string[];
+}
+
+export function preNormalizeSections(
+  sections: Array<{ pageNums: number[]; text: string }>,
+): PreNormalizedSection[] {
+  return sections.map(s => {
+    const normMemo = normalizeTextForComparison(s.text);
+    const normalizedLines = normMemo.split('\n').filter(l => l.length > 0 && l !== CHUNK_BREAK);
+    return { pageNums: s.pageNums, text: s.text, normalizedLines };
+  });
+}
+
 export function findBestMemoSection(
   normalizedPsdText: string,
   sections: Array<{ pageNums: number[]; text: string }>,
+  preNormalized?: PreNormalizedSection[],
 ): { pageNums: number[]; text: string; matchRatio: number } | null {
   if (sections.length === 0) return null;
 
@@ -494,11 +515,10 @@ export function findBestMemoSection(
   let bestSection: (typeof sections)[0] | null = null;
   let bestCount = 0;
 
-  const scores: { pageNums: number[]; exactCount: number; psdLineCount: number }[] = [];
-
-  for (const section of sections) {
-    const normMemo = normalizeTextForComparison(section.text);
-    const memoLines = normMemo.split('\n').filter(l => l.length > 0 && l !== CHUNK_BREAK);
+  for (let si = 0; si < sections.length; si++) {
+    const memoLines = preNormalized
+      ? preNormalized[si].normalizedLines
+      : normalizeTextForComparison(sections[si].text).split('\n').filter(l => l.length > 0 && l !== CHUNK_BREAK);
     if (memoLines.length === 0) continue;
 
     const memoUsed = new Set<number>();
@@ -514,11 +534,9 @@ export function findBestMemoSection(
       }
     }
 
-    scores.push({ pageNums: section.pageNums, exactCount, psdLineCount: psdLines.length });
-
     if (exactCount > bestCount) {
       bestCount = exactCount;
-      bestSection = section;
+      bestSection = sections[si];
     }
   }
 

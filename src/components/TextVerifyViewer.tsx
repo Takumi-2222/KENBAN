@@ -29,6 +29,8 @@ interface TextVerifyViewerProps {
   onUpdatePageMemo: (pageIndex: number, newText: string) => void;
   onSaveMemo: () => Promise<boolean>;
   onUndo: () => void;
+  stats: { matched: number; mismatched: number; pending: number; total: number };
+  diffPageIndices: number[];
 }
 
 export default function TextVerifyViewer({
@@ -49,6 +51,8 @@ export default function TextVerifyViewer({
   onUpdatePageMemo,
   onSaveMemo,
   onUndo,
+  stats,
+  diffPageIndices,
 }: TextVerifyViewerProps) {
   const [zoom, setZoom] = useState(1);
   const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
@@ -70,27 +74,6 @@ export default function TextVerifyViewer({
   const cursorOffsetRef = useRef<number | null>(null);
 
   const currentPage = pages[currentIndex] || null;
-
-  // 統計
-  const stats = useMemo(() => {
-    let matched = 0;
-    let mismatched = 0;
-    let pending = 0;
-    for (const p of pages) {
-      if (p.status === 'done') {
-        if (p.diffResult && !p.diffResult.psd.some(d => d.removed) && !p.diffResult.memo.some(d => d.added)) {
-          matched++;
-        } else if (p.diffResult) {
-          mismatched++;
-        } else {
-          pending++;
-        }
-      } else if (p.status === 'pending' || p.status === 'loading') {
-        pending++;
-      }
-    }
-    return { matched, mismatched, pending, total: pages.length };
-  }, [pages]);
 
   // 差分計算（メモ化）
   const diffResult = useMemo((): { psd: DiffPart[]; memo: DiffPart[] } | null => {
@@ -173,7 +156,7 @@ export default function TextVerifyViewer({
 
       return { ...layer, isLineBreakOnly };
     }).filter((v): v is ExtractedTextLayer & { isLineBreakOnly: boolean } => v !== null);
-  }, [currentPage]);
+  }, [currentPage?.extractedLayers, currentPage?.memoText, currentPage?.status]);
 
   // コンテナサイズ追跡（ResizeObserver）
   useEffect(() => {
@@ -212,19 +195,6 @@ export default function TextVerifyViewer({
   }, [diffResult]);
 
   const diffCount = useMemo(() => unifiedEntries.filter(e => e.type === 'diff' || e.type === 'linebreak').length, [unifiedEntries]);
-
-  // 差分があるページのインデックスリスト（ページ横断ナビ用）
-  const diffPageIndices = useMemo(() => {
-    const indices: number[] = [];
-    for (let i = 0; i < pages.length; i++) {
-      const p = pages[i];
-      if (p.status === 'done' && p.diffResult &&
-        (p.diffResult.psd.some(d => d.removed && d.value.replace(/\n$/, '') !== CHUNK_BREAK) || p.diffResult.memo.some(d => d.added && d.value.replace(/\n$/, '') !== CHUNK_BREAK))) {
-        indices.push(i);
-      }
-    }
-    return indices;
-  }, [pages]);
 
   // 全体での差分ページ数と現在位置
   const globalDiffPos = useMemo(() => {
