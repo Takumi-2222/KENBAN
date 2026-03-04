@@ -55,6 +55,7 @@ export default function MangaDiffDetector() {
   const [easterEgg, setEasterEgg] = useState(false);
   const easterEggBufferRef = useRef('');
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const cliInitRef = useRef(false); // CLI引数による初期化中はcompareModeリセットをスキップ
   const imageContainerRef = useRef<HTMLDivElement>(null);
   // PDF表示はRust PDFiumパイプライン → DataURL img表示（canvas不要）
   const fileListRef = useRef<HTMLDivElement>(null);  // ファイルリスト用
@@ -171,10 +172,11 @@ export default function MangaDiffDetector() {
     return () => window.removeEventListener('keydown', handler);
   }, [initialModeSelect]);
 
-  // モード変更時にリセット
+  // モード変更時にリセット（CLI初期化中はスキップ）
   useEffect(() => {
-    processingRef.current = false; // 進行中の処理フラグをリセット
     compareModeRef.current = compareMode; // モード追跡を更新
+    if (cliInitRef.current) return; // CLI引数による初期化中はリセットしない
+    processingRef.current = false; // 進行中の処理フラグをリセット
     setFilesA([]);
     setFilesB([]);
     setDiffFolderA(null);
@@ -249,25 +251,14 @@ export default function MangaDiffDetector() {
         const folderB = args[folderAIdx + 1];
         const selectionJsonArg = args[folderAIdx + 2]; // オプション: 選択範囲JSONパス
 
-        // 差分チェック画面を直接起動
-        setCompareMode(mode);
-        setInitialModeSelect(false);
-        setSidebarCollapsed(false);
-        setAppMode('diff-check');
-
-        // フォルダパスを設定
-        setDiffFolderA(folderA);
-        setDiffFolderB(folderB);
-
-        // 選択範囲JSON読み込み（psd-tiffモード用、オプション）
+        // 選択範囲JSON読み込み（psd-tiffモード用、オプション）— state設定前に読み込む
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let jsonData: any = null;
+        let bounds: CropBounds | null = null;
         if (mode === 'psd-tiff' && selectionJsonArg) {
           try {
             const jsonContent: string = await invoke('read_text_file', { path: selectionJsonArg });
             jsonData = JSON.parse(jsonContent);
-            // cropBoundsを設定
-            let bounds: CropBounds | null = null;
             if (jsonData.selectionRanges?.length === 0) {
               bounds = { left: 0, top: 0, right: -1, bottom: -1 };
             } else if (jsonData.selectionRanges?.[0]?.bounds) {
@@ -275,7 +266,6 @@ export default function MangaDiffDetector() {
             } else if (jsonData.bounds) {
               bounds = jsonData.bounds;
             }
-            if (bounds) setCropBounds(bounds);
           } catch (err) {
             console.error('Selection JSON load error:', err);
           }
@@ -304,12 +294,23 @@ export default function MangaDiffDetector() {
         }
 
         const filesFromA = await readFilesFromPaths(filePathsA);
-        setFilesA(filesFromA.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })));
-
         const filesFromB = await readFilesFromPaths(filePathsB);
+
+        // 全データ準備完了 → compareModeリセットをスキップしつつ一括設定
+        cliInitRef.current = true;
+        setCompareMode(mode);
+        setInitialModeSelect(false);
+        setSidebarCollapsed(false);
+        setAppMode('diff-check');
+        setDiffFolderA(folderA);
+        setDiffFolderB(folderB);
+        if (bounds) setCropBounds(bounds);
+        setFilesA(filesFromA.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })));
         setFilesB(filesFromB.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })));
       } catch (err) {
         console.error('CLI diff load error:', err);
+      } finally {
+        cliInitRef.current = false;
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
