@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Columns2,
@@ -79,8 +79,8 @@ interface ParallelViewerProps {
   handleParallelDrop: (e: React.DragEvent, side: 'A' | 'B') => void;
   handleSelectParallelFolder: (side: 'A' | 'B') => void;
   handleSelectParallelPdf: (side: 'A' | 'B') => void;
-  parallelPdfCanvasARef: React.RefObject<HTMLCanvasElement | null>;
-  parallelPdfCanvasBRef: React.RefObject<HTMLCanvasElement | null>;
+  parallelPdfImageA: string | null;
+  parallelPdfImageB: string | null;
   parallelMaxIndex: number;
   releaseMemoryBeforeMojiQ: () => void;
   expandPdfToParallelEntries: (pdfPath: string, side: 'A' | 'B', droppedFile?: File, forceSplitMode?: boolean) => void;
@@ -153,8 +153,8 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
     handleParallelDrop,
     handleSelectParallelFolder,
     handleSelectParallelPdf,
-    parallelPdfCanvasARef,
-    parallelPdfCanvasBRef,
+    parallelPdfImageA,
+    parallelPdfImageB,
     parallelMaxIndex: _parallelMaxIndex,
     releaseMemoryBeforeMojiQ,
     expandPdfToParallelEntries,
@@ -167,6 +167,79 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
 
   // ローカルstate: ドラッグオーバー側
   const [dragOverSide, setDragOverSide] = useState<string | null>(null);
+
+  // PDF canvas同期描画（両パネルを同一フレームで同時更新）
+  const pdfCanvasRefA = useRef<HTMLCanvasElement>(null);
+  const pdfCanvasRefB = useRef<HTMLCanvasElement>(null);
+  const pdfDrawVersionRef = useRef(0);
+
+  // canvasに高品質描画（表示サイズ×DPRで描画し、CSS縮小による画質劣化を回避）
+  const drawToCanvas = useCallback((canvas: HTMLCanvasElement, img: HTMLImageElement) => {
+    const parent = canvas.parentElement;
+    if (!parent) return;
+
+    const dpr = window.devicePixelRatio || 1;
+
+    // canvasを一時的に0にして、親コンテナの本来のサイズを計測（膨張防止）
+    canvas.style.width = '0px';
+    canvas.style.height = '0px';
+    const maxW = parent.clientWidth;
+    const maxH = parent.clientHeight;
+
+    // object-contain相当: アスペクト比を維持して親に収める
+    const imgRatio = img.naturalWidth / img.naturalHeight;
+    const containerRatio = maxW / maxH;
+    let displayW: number, displayH: number;
+    if (imgRatio > containerRatio) {
+      displayW = maxW;
+      displayH = maxW / imgRatio;
+    } else {
+      displayH = maxH;
+      displayW = maxH * imgRatio;
+    }
+
+    // canvas解像度 = 表示サイズ × DPR（CSSスケーリング不要で高画質）
+    canvas.width = Math.round(displayW * dpr);
+    canvas.height = Math.round(displayH * dpr);
+    canvas.style.width = `${displayW}px`;
+    canvas.style.height = `${displayH}px`;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  }, []);
+
+  useEffect(() => {
+    const urlA = parallelPdfImageA;
+    const urlB = parallelPdfImageB;
+    if (!urlA && !urlB) return;
+
+    const version = ++pdfDrawVersionRef.current;
+
+    (async () => {
+      // 両画像をデコード
+      const imgA = urlA ? new Image() : null;
+      const imgB = urlB ? new Image() : null;
+      if (imgA) { imgA.crossOrigin = 'anonymous'; imgA.src = urlA!; }
+      if (imgB) { imgB.crossOrigin = 'anonymous'; imgB.src = urlB!; }
+
+      await Promise.all([
+        imgA?.decode().catch(() => {}) ?? Promise.resolve(),
+        imgB?.decode().catch(() => {}) ?? Promise.resolve(),
+      ]);
+
+      if (version !== pdfDrawVersionRef.current) return;
+
+      // 同一requestAnimationFrame内で両canvasに描画 → 同じフレームで表示
+      requestAnimationFrame(() => {
+        if (version !== pdfDrawVersionRef.current) return;
+        if (imgA && pdfCanvasRefA.current) drawToCanvas(pdfCanvasRefA.current, imgA);
+        if (imgB && pdfCanvasRefB.current) drawToCanvas(pdfCanvasRefB.current, imgB);
+      });
+    })();
+  }, [parallelPdfImageA, parallelPdfImageB, drawToCanvas]);
 
   // ファイルパスから親フォルダパスを取得
   const getDirectoryFromPath = useCallback((filePath: string): string | null => {
@@ -624,15 +697,16 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                     </div>
                   </div>
                 )}
-                {/* PDF表示: Canvas直接レンダリング（MojiQと同様） */}
-                {parallelFilesA[parallelIndexA]?.type === 'pdf' ? (
+                {/* PDF表示: Rust PDFiumレンダリング → canvas同期描画 */}
+                {parallelFilesA[parallelIndexA]?.type === 'pdf' && parallelPdfImageA ? (
                   <>
                     <canvas
-                      ref={parallelPdfCanvasARef}
-                      className="max-w-full max-h-full object-contain shadow-2xl bg-white"
+                      ref={pdfCanvasRefA}
+                      className="shadow-2xl bg-white"
+                      draggable={false}
                       style={{ transform: `scale(${parallelZoomA}) translate(${parallelPanA.x / parallelZoomA}px, ${parallelPanA.y / parallelZoomA}px)`, transformOrigin: 'center center' }}
                     />
-                    {!isFullscreen && parallelPdfCanvasARef.current && (
+                    {!isFullscreen && (
                       instructionButtonsHidden ? (
                         <button
                           onClick={() => setInstructionButtonsHidden(false)}
@@ -652,8 +726,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           </button>
                           <button
                             onClick={async () => {
-                              const canvas = parallelPdfCanvasARef.current;
-                              if (canvas) setParallelCapturedImageA(canvas.toDataURL('image/jpeg', 0.92));
+                              if (parallelPdfImageA) setParallelCapturedImageA(parallelPdfImageA);
                             }}
                             className="flex items-center gap-1.5 px-3 py-2 bg-blue-600/90 hover:bg-blue-500 text-white rounded-lg shadow-lg transition-colors text-sm"
                             title="指示エディタを開く (C)"
@@ -836,15 +909,16 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                     </div>
                   </div>
                 )}
-                {/* PDF表示: Canvas直接レンダリング（MojiQと同様） */}
-                {parallelFilesB[parallelIndexB]?.type === 'pdf' ? (
+                {/* PDF表示: Rust PDFiumレンダリング → canvas同期描画 */}
+                {parallelFilesB[parallelIndexB]?.type === 'pdf' && parallelPdfImageB ? (
                   <>
                     <canvas
-                      ref={parallelPdfCanvasBRef}
-                      className="max-w-full max-h-full object-contain shadow-2xl bg-white"
+                      ref={pdfCanvasRefB}
+                      className="shadow-2xl bg-white"
+                      draggable={false}
                       style={{ transform: `scale(${parallelZoomB}) translate(${parallelPanB.x / parallelZoomB}px, ${parallelPanB.y / parallelZoomB}px)`, transformOrigin: 'center center' }}
                     />
-                    {!isFullscreen && parallelPdfCanvasBRef.current && (
+                    {!isFullscreen && (
                       instructionButtonsHidden ? (
                         <button
                           onClick={() => setInstructionButtonsHidden(false)}
@@ -864,8 +938,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           </button>
                           <button
                             onClick={async () => {
-                              const canvas = parallelPdfCanvasBRef.current;
-                              if (canvas) setParallelCapturedImageB(canvas.toDataURL('image/jpeg', 0.92));
+                              if (parallelPdfImageB) setParallelCapturedImageB(parallelPdfImageB);
                             }}
                             className="flex items-center gap-1.5 px-3 py-2 bg-green-600/90 hover:bg-green-500 text-white rounded-lg shadow-lg transition-colors text-sm"
                             title="指示エディタを開く (C)"

@@ -41,6 +41,7 @@ export default function MangaDiffDetector() {
   const [currentPage, setCurrentPage] = useState(1);
   const [diffCache, setDiffCache] = useState<Record<string, PageCache>>({});
   const [isLoadingPage, setIsLoadingPage] = useState(false);
+  const [pdfComputingPages, setPdfComputingPages] = useState<Set<string>>(new Set());
   const [dragOverSide, setDragOverSide] = useState<string | null>(null);
   const [preloadProgress, setPreloadProgress] = useState({ loaded: 0, total: 0 });
   const [optimizeProgress, setOptimizeProgress] = useState<{ fileName: string; message: string; current?: number; total?: number } | null>(null);
@@ -55,9 +56,7 @@ export default function MangaDiffDetector() {
   const easterEggBufferRef = useRef('');
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const imageContainerRef = useRef<HTMLDivElement>(null);
-  const pdfCanvasRef = useRef<HTMLCanvasElement>(null);  // PDF表示用Canvas（差分モード）
-  const parallelPdfCanvasARef = useRef<HTMLCanvasElement>(null);  // PDF表示用Canvas（ダブルビューワーA）
-  const parallelPdfCanvasBRef = useRef<HTMLCanvasElement>(null);  // PDF表示用Canvas（ダブルビューワーB）
+  // PDF表示はRust PDFiumパイプライン → DataURL img表示（canvas不要）
   const fileListRef = useRef<HTMLDivElement>(null);  // ファイルリスト用
   const pageListRef = useRef<HTMLDivElement>(null);  // PDFページリスト用
   const parallelFileListRef = useRef<HTMLDivElement>(null);  // 並列ビューファイルリスト用
@@ -183,7 +182,7 @@ export default function MangaDiffDetector() {
     setPairs([]);
     setSelectedIndex(0);
     setCropBounds(null);
-    setDiffCache({});
+    setDiffCache(prev => { cleanupPageCache(prev); return {}; });
     setCurrentPage(1);
     setPreloadProgress({ loaded: 0, total: 0 });
     setZoom(1);
@@ -210,6 +209,19 @@ export default function MangaDiffDetector() {
       }
     }, 2000);
     return () => clearTimeout(timer);
+  }, []);
+
+  // 一時ファイルクリーンアップ（起動時 + 30分ごと）
+  useEffect(() => {
+    // 起動時に古い一時ファイルを削除
+    invoke('cleanup_preview_cache').catch(console.error);
+
+    // 30分ごとに定期クリーンアップ
+    const interval = setInterval(() => {
+      invoke('cleanup_preview_cache').catch(console.error);
+    }, 30 * 60 * 1000);
+
+    return () => clearInterval(interval);
   }, []);
 
   // CLI引数による差分モード自動起動（--diff [mode] folderA folderB [selectionJson]）
@@ -351,64 +363,66 @@ export default function MangaDiffDetector() {
     setPanPosition({ x: 0, y: 0 });
   }, [selectedIndex, currentPage]);
 
-  // PDF Canvas表示更新（差分モード用）- ImageBitmapから直接描画
-  useEffect(() => {
-    if (compareMode !== 'pdf-pdf' || viewMode === 'diff') return;
-    if (!pdfCanvasRef.current) return;
+  // PDF差分モードはRustパイプラインで処理 → DataURL img表示（canvas不要）
 
-    const file = viewMode === 'B' ? filesB[0] : filesA[0];
-    if (!file) return;
+  // PDF表示更新（ダブルビューワー用）- Rust PDFiumレンダリング
+  const [parallelPdfImageA, setParallelPdfImageA] = useState<string | null>(null);
+  const [parallelPdfImageB, setParallelPdfImageB] = useState<string | null>(null);
+  // PDFページURLのフロントエンドキャッシュ（IPC不要で即表示するため）
+  const pdfUrlCacheRef = useRef<Record<string, string>>({});
 
-    (async () => {
-      const entry = await pdfCache.renderPageBitmap(file, currentPage);
-      if (entry && pdfCanvasRef.current) {
-        const canvas = pdfCanvasRef.current;
-        canvas.width = entry.width;
-        canvas.height = entry.height;
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(entry.bitmap, 0, 0);
-      }
-    })();
-  }, [compareMode, viewMode, currentPage, filesA, filesB]);
-
-  // PDF Canvas表示更新（ダブルビューワー用）- ImageBitmapから直接描画
   useEffect(() => {
     if (appMode !== 'parallel-view') return;
 
     const entryA = parallelFilesA[parallelIndexA];
     const entryB = parallelFilesB[parallelIndexB];
 
-    // パネルA: PDF表示（見開き分割対応）
-    if (entryA?.type === 'pdf' && entryA.pdfFile && entryA.pdfPage && parallelPdfCanvasARef.current) {
-      (async () => {
-        const entry = entryA.spreadSide
-          ? await pdfCache.renderSplitPageBitmap(entryA.pdfFile!, entryA.pdfPage!, entryA.spreadSide)
-          : await pdfCache.renderPageBitmap(entryA.pdfFile!, entryA.pdfPage!);
-        if (entry && parallelPdfCanvasARef.current) {
-          const canvas = parallelPdfCanvasARef.current;
-          canvas.width = entry.width;
-          canvas.height = entry.height;
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(entry.bitmap, 0, 0);
-        }
-      })();
+    const isPdfA = !!(entryA?.type === 'pdf' && entryA.path && entryA.pdfPage);
+    const isPdfB = !!(entryB?.type === 'pdf' && entryB.path && entryB.pdfPage);
+
+    const keyA = isPdfA ? `${entryA.path}:${entryA.pdfPage! - 1}:${entryA.spreadSide || ''}` : '';
+    const keyB = isPdfB ? `${entryB.path}:${entryB.pdfPage! - 1}:${entryB.spreadSide || ''}` : '';
+
+    const cachedA = isPdfA ? pdfUrlCacheRef.current[keyA] : null;
+    const cachedB = isPdfB ? pdfUrlCacheRef.current[keyB] : null;
+
+    const needA = isPdfA && !cachedA;
+    const needB = isPdfB && !cachedB;
+
+    if (!needA && !needB) {
+      // 両方キャッシュヒット → URLをセット（描画同期はParallelViewerのcanvasで行う）
+      setParallelPdfImageA(cachedA);
+      setParallelPdfImageB(cachedB);
+      return;
     }
 
-    // パネルB: PDF表示（見開き分割対応）
-    if (entryB?.type === 'pdf' && entryB.pdfFile && entryB.pdfPage && parallelPdfCanvasBRef.current) {
-      (async () => {
-        const entry = entryB.spreadSide
-          ? await pdfCache.renderSplitPageBitmap(entryB.pdfFile!, entryB.pdfPage!, entryB.spreadSide)
-          : await pdfCache.renderPageBitmap(entryB.pdfFile!, entryB.pdfPage!);
-        if (entry && parallelPdfCanvasBRef.current) {
-          const canvas = parallelPdfCanvasBRef.current;
-          canvas.width = entry.width;
-          canvas.height = entry.height;
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(entry.bitmap, 0, 0);
-        }
-      })();
-    }
+    // キャッシュミス分のみIPCでレンダリング
+    (async () => {
+      const [resultA, resultB] = await Promise.all([
+        needA
+          ? invoke<{ src: string; width: number; height: number }>('render_pdf_page', {
+              path: entryA.path,
+              page: entryA.pdfPage! - 1,
+              dpi: 300.0,
+              splitSide: entryA.spreadSide || null,
+            }).catch(err => { console.error('PDF render A error:', err); return null; })
+          : Promise.resolve(null),
+        needB
+          ? invoke<{ src: string; width: number; height: number }>('render_pdf_page', {
+              path: entryB.path,
+              page: entryB.pdfPage! - 1,
+              dpi: 300.0,
+              splitSide: entryB.spreadSide || null,
+            }).catch(err => { console.error('PDF render B error:', err); return null; })
+          : Promise.resolve(null),
+      ]);
+
+      if (resultA) pdfUrlCacheRef.current[keyA] = convertFileSrc(resultA.src);
+      if (resultB) pdfUrlCacheRef.current[keyB] = convertFileSrc(resultB.src);
+
+      setParallelPdfImageA(resultA ? pdfUrlCacheRef.current[keyA] : cachedA);
+      setParallelPdfImageB(resultB ? pdfUrlCacheRef.current[keyB] : cachedB);
+    })();
   }, [appMode, parallelFilesA, parallelFilesB, parallelIndexA, parallelIndexB]);
 
   // モードに応じたファイル拡張子フィルタ
@@ -477,164 +491,9 @@ export default function MangaDiffDetector() {
     });
   }, []);
 
-  // 差分計算（シンプル版 + マーカー機能）— PDF差分用に残す
-  const computeDiffSimple = async (srcA: string, srcB: string, threshold: number): Promise<{
-    diffSrc: string;
-    diffSrcWithMarkers: string;
-    hasDiff: boolean;
-    diffCount: number;
-    markers: DiffMarker[];
-    imageWidth: number;
-    imageHeight: number;
-  }> => {
-    return new Promise((resolve) => {
-      const imageA = new Image();
-      const imageB = new Image();
-      let loaded = 0;
-
-      const onLoad = () => {
-        loaded++;
-        if (loaded < 2) return;
-
-        const width = Math.max(imageA.width, imageB.width);
-        const height = Math.max(imageA.height, imageB.height);
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d')!;
-
-        ctx.drawImage(imageA, 0, 0, width, height);
-        const dataA = ctx.getImageData(0, 0, width, height);
-
-        ctx.clearRect(0, 0, width, height);
-        ctx.drawImage(imageB, 0, 0, width, height);
-        const dataB = ctx.getImageData(0, 0, width, height);
-
-        const diffData = ctx.createImageData(width, height);
-        let diffCount = 0;
-        const diffPixels: { x: number; y: number }[] = [];
-
-        for (let i = 0; i < dataA.data.length; i += 4) {
-          const dr = Math.abs(dataA.data[i] - dataB.data[i]);
-          const dg = Math.abs(dataA.data[i + 1] - dataB.data[i + 1]);
-          const db = Math.abs(dataA.data[i + 2] - dataB.data[i + 2]);
-
-          if (dr > threshold || dg > threshold || db > threshold) {
-            diffData.data[i] = 255;
-            diffData.data[i + 1] = 0;
-            diffData.data[i + 2] = 0;
-            diffData.data[i + 3] = 255;
-            diffCount++;
-            const pixelIdx = i / 4;
-            diffPixels.push({ x: pixelIdx % width, y: Math.floor(pixelIdx / width) });
-          } else {
-            diffData.data[i + 3] = 255;
-          }
-        }
-
-        ctx.putImageData(diffData, 0, 0);
-        const diffSrc = canvas.toDataURL();
-
-        const markers: DiffMarker[] = [];
-        if (diffPixels.length > 0) {
-          const gridSize = 200;
-          const grid = new Map<string, { gx: number; gy: number; pixels: { x: number; y: number }[]; minX: number; maxX: number; minY: number; maxY: number }>();
-          for (const p of diffPixels) {
-            const gx = Math.floor(p.x / gridSize);
-            const gy = Math.floor(p.y / gridSize);
-            const key = `${gx},${gy}`;
-            if (!grid.has(key)) grid.set(key, { gx, gy, pixels: [], minX: p.x, maxX: p.x, minY: p.y, maxY: p.y });
-            const cell = grid.get(key)!;
-            cell.pixels.push(p);
-            cell.minX = Math.min(cell.minX, p.x);
-            cell.maxX = Math.max(cell.maxX, p.x);
-            cell.minY = Math.min(cell.minY, p.y);
-            cell.maxY = Math.max(cell.maxY, p.y);
-          }
-
-          const cells = Array.from(grid.values());
-          const parent = new Map<number, number>();
-          cells.forEach((_, i) => parent.set(i, i));
-
-          const find = (i: number): number => {
-            if (parent.get(i) !== i) parent.set(i, find(parent.get(i)!));
-            return parent.get(i)!;
-          };
-          const union = (i: number, j: number) => {
-            const pi = find(i), pj = find(j);
-            if (pi !== pj) parent.set(pi, pj);
-          };
-
-          for (let i = 0; i < cells.length; i++) {
-            for (let j = i + 1; j < cells.length; j++) {
-              const dx = Math.abs(cells[i].gx - cells[j].gx);
-              const dy = Math.abs(cells[i].gy - cells[j].gy);
-              if (dx <= 1 && dy <= 1) union(i, j);
-            }
-          }
-
-          const groups = new Map<number, { minX: number; maxX: number; minY: number; maxY: number; count: number }>();
-          cells.forEach((cell, i) => {
-            const root = find(i);
-            if (!groups.has(root)) groups.set(root, { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, count: 0 });
-            const g = groups.get(root)!;
-            g.minX = Math.min(g.minX, cell.minX);
-            g.maxX = Math.max(g.maxX, cell.maxX);
-            g.minY = Math.min(g.minY, cell.minY);
-            g.maxY = Math.max(g.maxY, cell.maxY);
-            g.count += cell.pixels.length;
-          });
-
-          for (const group of groups.values()) {
-            if (group.count >= 1) {
-              const cx = (group.minX + group.maxX) / 2;
-              const cy = (group.minY + group.maxY) / 2;
-              const radiusX = (group.maxX - group.minX) / 2 + 100;
-              const radiusY = (group.maxY - group.minY) / 2 + 100;
-              const markerRadius = Math.max(300, Math.max(radiusX, radiusY));
-              markers.push({ x: cx, y: cy, radius: markerRadius, count: group.count });
-            }
-          }
-
-          markers.sort((a, b) => b.count - a.count);
-
-          ctx.lineWidth = 6;
-          markers.forEach((marker, idx) => {
-            ctx.strokeStyle = 'cyan';
-            ctx.beginPath();
-            ctx.arc(marker.x, marker.y, marker.radius, 0, Math.PI * 2);
-            ctx.stroke();
-
-            ctx.strokeStyle = 'white';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(marker.x, marker.y, marker.radius - 4, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.lineWidth = 6;
-
-            const badgeY = marker.y - marker.radius - 20;
-            ctx.fillStyle = 'cyan';
-            ctx.beginPath();
-            ctx.arc(marker.x, badgeY, 18, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = 'black';
-            ctx.font = 'bold 20px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(String(idx + 1), marker.x, badgeY);
-          });
-        }
-
-        const diffSrcWithMarkers = canvas.toDataURL();
-
-        resolve({ diffSrc, diffSrcWithMarkers, hasDiff: diffCount > 0, diffCount, markers, imageWidth: width, imageHeight: height });
-      };
-
-      imageA.onload = onLoad;
-      imageB.onload = onLoad;
-      imageA.src = srcA;
-      imageB.src = srcB;
-    });
+  // diffCacheをクリアするヘルパー
+  const cleanupPageCache = (_cache: Record<string, PageCache>) => {
+    // Rust DataURL方式ではImageBitmapの手動解放は不要
   };
 
   // 差分画像にマーカーを描画（Rust側はマーカーなし画像+座標を返すので、JS側で描画）
@@ -690,6 +549,7 @@ export default function MangaDiffDetector() {
 
         resolve(canvas.toDataURL());
       };
+      img.crossOrigin = 'anonymous';
       img.src = diffSrc;
     });
   };
@@ -1350,7 +1210,7 @@ export default function MangaDiffDetector() {
     }
 
     setPairs(newPairs);
-    setDiffCache({});
+    setDiffCache(prev => { cleanupPageCache(prev); return {}; });
     setCurrentPage(1);
     setPreloadProgress({ loaded: 0, total: 0 });
     pdfCache.clear();
@@ -1413,15 +1273,19 @@ export default function MangaDiffDetector() {
         });
         if (compareModeRef.current !== startMode) return;
 
-        const diffSrcWithMarkers = await drawMarkersOnImage(result.diff_src, result.markers, 'heatmap');
+        const srcA = convertFileSrc(result.src_a);
+        const srcB = convertFileSrc(result.src_b);
+        const processedA = convertFileSrc(result.processed_a);
+        const diffSrc = convertFileSrc(result.diff_src);
+        const diffSrcWithMarkers = await drawMarkersOnImage(diffSrc, result.markers, 'heatmap');
         if (compareModeRef.current !== startMode) return;
 
         setPairs(prev => {
           const next = [...prev];
           next[index] = { ...next[index],
-            srcA: result.src_a, srcB: result.src_b,
-            processedA: result.processed_a, processedB: result.src_b,
-            diffSrc: result.diff_src, diffSrcWithMarkers,
+            srcA, srcB,
+            processedA, processedB: srcB,
+            diffSrc, diffSrcWithMarkers,
             hasDiff: result.has_diff, diffProbability: result.diff_probability,
             markers: result.markers, imageWidth: result.image_width, imageHeight: result.image_height,
             status: 'done'
@@ -1429,44 +1293,73 @@ export default function MangaDiffDetector() {
           return next;
         });
       } else if (compareMode === 'pdf-pdf') {
-        // 最適化（UIが表示される）
-        const [docA, docB] = await Promise.all([
-          pdfCache.getDocument(pair.fileA),
-          pdfCache.getDocument(pair.fileB)
-        ]);
-        // モードが変わっていたら処理を中断
-        if (compareModeRef.current !== startMode) return;
+        // Rust PDFiumパイプライン: PDFの差分計算をRust側で一括処理
+        const pathA = (pair.fileA as FileWithPath).filePath!;
+        const pathB = (pair.fileB as FileWithPath).filePath!;
 
-        const totalPages = Math.min(docA.numPages, docB.numPages);
-
-        // 最初のページのみ読み込み（全ページ事前読み込みはメモリ消費が大きいため廃止）
-        // LRUキャッシュでオンデマンドにページを管理
         if (globalOptimizeProgress) {
-          globalOptimizeProgress(pair.fileA?.name || 'PDF', '1ページ目を準備中...', 1, totalPages);
+          globalOptimizeProgress(pair.fileA?.name || 'PDF', 'ページ数を取得中...', 0, 1);
         }
 
-        // 1ページ目のみ読み込み（直列で処理してメモリ負荷を軽減）
-        const srcA = await pdfCache.renderPage(pair.fileA!, 1);
-        const srcB = await pdfCache.renderPage(pair.fileB!, 1);
-        // モードが変わっていたら処理を中断
+        // ページ数を取得
+        const [countA, countB] = await Promise.all([
+          invoke<number>('get_pdf_page_count', { path: pathA }),
+          invoke<number>('get_pdf_page_count', { path: pathB })
+        ]);
+        if (compareModeRef.current !== startMode) return;
+
+        const totalPages = Math.min(countA, countB);
+
+        if (globalOptimizeProgress) {
+          globalOptimizeProgress(pair.fileA?.name || 'PDF', '1ページ目の差分を計算中...', 1, totalPages);
+        }
+
+        // 1ページ目の差分をRust側で計算（PDFiumレンダリング + rayon並列差分）
+        const result = await invoke<{
+          src_a: string; src_b: string; diff_src: string;
+          has_diff: boolean; diff_count: number;
+          markers: DiffMarker[]; image_width: number; image_height: number;
+        }>('compute_pdf_diff', {
+          pathA, pathB, page: 0, dpi: 300.0, threshold: 5
+        });
         if (compareModeRef.current !== startMode) return;
 
         if (globalOptimizeProgress) {
           globalOptimizeProgress(pair.fileA?.name || 'PDF', '準備完了', totalPages, totalPages);
         }
 
-        const { diffSrc, diffSrcWithMarkers, hasDiff, markers } = await computeDiffSimple(srcA!, srcB!, 5);
-        // モードが変わっていたら処理を中断
+        // ファイルパスをasset://に変換
+        const srcA = convertFileSrc(result.src_a);
+        const srcB = convertFileSrc(result.src_b);
+        const diffSrc = convertFileSrc(result.diff_src);
+
+        // マーカー付き差分画像を生成
+        const diffSrcWithMarkers = await drawMarkersOnImage(diffSrc, result.markers, 'simple');
         if (compareModeRef.current !== startMode) return;
 
         const cacheKey = `${index}-1`;
-        setDiffCache(prev => ({ ...prev, [cacheKey]: { srcA: srcA!, srcB: srcB!, diffSrc, diffSrcWithMarkers, hasDiff, markers } }));
+        setDiffCache(prev => ({
+          ...prev,
+          [cacheKey]: {
+            srcA, srcB,
+            diffSrc, diffSrcWithMarkers,
+            hasDiff: result.has_diff, markers: result.markers,
+            imageWidth: result.image_width, imageHeight: result.image_height
+          }
+        }));
 
         setPreloadProgress({ loaded: totalPages, total: totalPages });
 
         setPairs(prev => {
           const next = [...prev];
-          next[index] = { ...next[index], srcA, srcB, processedA: srcA, processedB: srcB, diffSrc, hasDiff, totalPages, status: 'done' };
+          next[index] = {
+            ...next[index],
+            srcA, srcB,
+            processedA: srcA, processedB: srcB,
+            diffSrc, diffSrcWithMarkers,
+            hasDiff: result.has_diff, markers: result.markers,
+            totalPages, status: 'done'
+          };
           return next;
         });
       } else {
@@ -1482,15 +1375,18 @@ export default function MangaDiffDetector() {
         });
         if (compareModeRef.current !== startMode) return;
 
-        const diffSrcWithMarkers = await drawMarkersOnImage(result.diff_src, result.markers, 'simple');
+        const srcA = convertFileSrc(result.src_a);
+        const srcB = convertFileSrc(result.src_b);
+        const diffSrc = convertFileSrc(result.diff_src);
+        const diffSrcWithMarkers = await drawMarkersOnImage(diffSrc, result.markers, 'simple');
         if (compareModeRef.current !== startMode) return;
 
         setPairs(prev => {
           const next = [...prev];
           next[index] = { ...next[index],
-            srcA: result.src_a, srcB: result.src_b,
-            processedA: result.src_a, processedB: result.src_b,
-            diffSrc: result.diff_src, diffSrcWithMarkers,
+            srcA, srcB,
+            processedA: srcA, processedB: srcB,
+            diffSrc, diffSrcWithMarkers,
             hasDiff: result.has_diff, markers: result.markers,
             status: 'done'
           };
@@ -1667,22 +1563,38 @@ export default function MangaDiffDetector() {
 
     const loadPage = async () => {
       setIsLoadingPage(true);
+      setPdfComputingPages(prev => new Set(prev).add(cacheKey));
       try {
-        // 直列処理でメモリ負荷を軽減
-        const srcA = await pdfCache.renderPage(pair.fileA!, currentPage);
-        const srcB = await pdfCache.renderPage(pair.fileB!, currentPage);
+        const pathA = (pair.fileA as FileWithPath).filePath!;
+        const pathB = (pair.fileB as FileWithPath).filePath!;
 
-        if (!srcA || !srcB) {
-          setIsLoadingPage(false);
-          return;
-        }
+        // Rust PDFiumパイプラインで差分計算
+        const result = await invoke<{
+          src_a: string; src_b: string; diff_src: string;
+          has_diff: boolean; diff_count: number;
+          markers: DiffMarker[]; image_width: number; image_height: number;
+        }>('compute_pdf_diff', {
+          pathA, pathB, page: currentPage - 1, dpi: 300.0, threshold: 5
+        });
 
-        const { diffSrc, diffSrcWithMarkers, hasDiff, markers } = await computeDiffSimple(srcA, srcB, 5);
+        const srcA = convertFileSrc(result.src_a);
+        const srcB = convertFileSrc(result.src_b);
+        const diffSrc = convertFileSrc(result.diff_src);
+        const diffSrcWithMarkers = await drawMarkersOnImage(diffSrc, result.markers, 'simple');
 
-        setDiffCache(prev => ({ ...prev, [cacheKey]: { srcA, srcB, diffSrc, diffSrcWithMarkers, hasDiff, markers } }));
+        setDiffCache(prev => ({
+          ...prev,
+          [cacheKey]: {
+            srcA, srcB,
+            diffSrc, diffSrcWithMarkers,
+            hasDiff: result.has_diff, markers: result.markers,
+            imageWidth: result.image_width, imageHeight: result.image_height
+          }
+        }));
       } catch (err) {
         console.error("Page load error:", err);
       }
+      setPdfComputingPages(prev => { const next = new Set(prev); next.delete(cacheKey); return next; });
       setIsLoadingPage(false);
     };
 
@@ -1696,29 +1608,58 @@ export default function MangaDiffDetector() {
     if (!pair || pair.status !== 'done' || !pair.totalPages || pair.totalPages <= 1) return;
 
     const calculateAllPages = async () => {
-      for (let page = 1; page <= pair.totalPages!; page++) {
+      // 現在ページの前後3ページを優先、残りはアイドル時に順次処理
+      const priorityPages: number[] = [];
+      for (let offset = 0; offset <= 3; offset++) {
+        if (currentPage + offset <= pair.totalPages!) priorityPages.push(currentPage + offset);
+        if (offset > 0 && currentPage - offset >= 1) priorityPages.push(currentPage - offset);
+      }
+      const remainingPages = Array.from({ length: pair.totalPages! }, (_, i) => i + 1)
+        .filter(p => !priorityPages.includes(p));
+      const pageOrder = [...priorityPages, ...remainingPages];
+
+      const pathA = (pair.fileA as FileWithPath).filePath!;
+      const pathB = (pair.fileB as FileWithPath).filePath!;
+
+      for (const page of pageOrder) {
         const cacheKey = `${selectedIndex}-${page}`;
-        if (diffCache[cacheKey]) continue; // 既にキャッシュ済みならスキップ
+        if (diffCache[cacheKey]) continue;
 
+        setPdfComputingPages(prev => new Set(prev).add(cacheKey));
         try {
-          // 直列処理でメモリ負荷を軽減（並列処理を廃止）
-          const srcA = await pdfCache.renderPage(pair.fileA!, page);
-          const srcB = await pdfCache.renderPage(pair.fileB!, page);
+          // Rust PDFiumパイプラインで差分計算
+          const result = await invoke<{
+            src_a: string; src_b: string; diff_src: string;
+            has_diff: boolean; diff_count: number;
+            markers: DiffMarker[]; image_width: number; image_height: number;
+          }>('compute_pdf_diff', {
+            pathA, pathB, page: page - 1, dpi: 300.0, threshold: 5
+          });
 
-          if (!srcA || !srcB) continue;
-
-          const { diffSrc, diffSrcWithMarkers, hasDiff, markers } = await computeDiffSimple(srcA, srcB, 5);
+          const srcA = convertFileSrc(result.src_a);
+          const srcB = convertFileSrc(result.src_b);
+          const diffSrc = convertFileSrc(result.diff_src);
+          const diffSrcWithMarkers = await drawMarkersOnImage(diffSrc, result.markers, 'simple');
 
           setDiffCache(prev => {
-            // 既に計算済みならスキップ（競合防止）
             if (prev[cacheKey]) return prev;
-            return { ...prev, [cacheKey]: { srcA, srcB, diffSrc, diffSrcWithMarkers, hasDiff, markers } };
+            return {
+              ...prev,
+              [cacheKey]: {
+                srcA, srcB,
+                diffSrc, diffSrcWithMarkers,
+                hasDiff: result.has_diff, markers: result.markers,
+                imageWidth: result.image_width, imageHeight: result.image_height
+              }
+            };
           });
+          setPdfComputingPages(prev => { const next = new Set(prev); next.delete(cacheKey); return next; });
 
           // ページ間で少し待機してGCの機会を与える
           await new Promise(r => setTimeout(r, 50));
         } catch (err) {
           console.error(`Page ${page} diff calculation error:`, err);
+          setPdfComputingPages(prev => { const next = new Set(prev); next.delete(cacheKey); return next; });
         }
       }
     };
@@ -1758,27 +1699,9 @@ export default function MangaDiffDetector() {
       // 全ページをDataURL変換してparallelImageCacheに保存
       // PDF表示はCanvas直接レンダリングを使用するため、事前変換は不要
       // useEffectのparallelPdfCanvasA/BRefで必要時にImageBitmapから描画される
-      // diffCacheにある分のみキャッシュに追加（メモリ節約）
-      const newCache: ParallelImageCache = {};
-      for (let page = 1; page <= totalPages; page++) {
-        const cacheKeyA = `${filePathA}:page${page}:${maxWidth}x${maxHeight}`;
-        const cacheKeyB = `${filePathB}:page${page}:${maxWidth}x${maxHeight}`;
-
-        const diffKey = `0-${page}`;
-        const pageData = diffCache[diffKey];
-
-        // diffCacheにある分だけキャッシュに追加（新規変換は行わない）
-        if (pageData?.srcA) {
-          newCache[cacheKeyA] = { imageUrl: pageData.srcA, width: 0, height: 0 };
-        }
-        if (pageData?.srcB) {
-          newCache[cacheKeyB] = { imageUrl: pageData.srcB, width: 0, height: 0 };
-        }
-      }
-
-      // キャッシュを更新
-      setParallelImageCache(prev => ({ ...prev, ...newCache }));
-      // === PDFキャッシュ移行ここまで ===
+      // PDF並列ビューはCanvas直接レンダリング（pdfCache.renderPageBitmap）を使用
+      // diffCacheはImageBitmapのため、DataURL変換は不要
+      // === PDFキャッシュ移行不要 ===
 
       // A側のPDFページエントリを作成
       const entriesA: ParallelFileEntry[] = [];
@@ -2150,29 +2073,45 @@ export default function MangaDiffDetector() {
       return;
     }
 
-    setParallelLoading(true);
-    const { maxWidth, maxHeight } = getParallelDisplaySize();
+    // PDFはRust PDFiumのuseEffectで処理されるのでスキップ
+    const loadA = fileA?.type !== 'pdf' ? fileA : null;
+    const loadB = fileB?.type !== 'pdf' ? fileB : null;
 
-    // ナビゲーション方向を検知して先読みを即座に開始（現画像読み込みと並列）
-    const currentIdx = Math.max(parallelIndexA, parallelIndexB);
-    const direction = currentIdx >= prevParallelIndexRef.current ? 'forward' : 'backward';
-    prevParallelIndexRef.current = currentIdx;
-    preloadParallelImages(currentIdx, maxWidth, maxHeight, undefined, undefined, direction);
+    if (loadA || loadB) {
+      setParallelLoading(true);
+      const { maxWidth, maxHeight } = getParallelDisplaySize();
 
-    try {
-      // 両方の画像を並列で読み込み
-      const [imageA, imageB] = await Promise.all([
-        fileA ? loadSingleParallelImage(fileA, maxWidth, maxHeight, skipCache) : null,
-        fileB ? loadSingleParallelImage(fileB, maxWidth, maxHeight, skipCache) : null,
-      ]);
+      try {
+        const [imageA, imageB] = await Promise.all([
+          loadA ? loadSingleParallelImage(loadA, maxWidth, maxHeight, skipCache) : null,
+          loadB ? loadSingleParallelImage(loadB, maxWidth, maxHeight, skipCache) : null,
+        ]);
 
-      setParallelImageA(imageA);
-      setParallelImageB(imageB);
-    } catch (err) {
-      console.error('Parallel image load error:', err);
+        setParallelImageA(imageA);
+        setParallelImageB(imageB);
+      } catch (err) {
+        console.error('Parallel image load error:', err);
+      }
+
+      setParallelLoading(false);
+
+      // 先読みは現在ページのレンダリング完了後に開始（リソース競合を回避）
+      const currentIdx = Math.max(parallelIndexA, parallelIndexB);
+      const direction = currentIdx >= prevParallelIndexRef.current ? 'forward' : 'backward';
+      prevParallelIndexRef.current = currentIdx;
+      preloadParallelImages(currentIdx, maxWidth, maxHeight, undefined, undefined, direction);
+    } else {
+      // PDF onlyの場合もnon-PDF用のstateをクリア
+      setParallelImageA(null);
+      setParallelImageB(null);
+
+      // PDF先読みはPDF useEffect側で現在ページ完了後に行うため、ここでは方向追跡のみ
+      const currentIdx = Math.max(parallelIndexA, parallelIndexB);
+      const direction = currentIdx >= prevParallelIndexRef.current ? 'forward' : 'backward';
+      prevParallelIndexRef.current = currentIdx;
+      const { maxWidth, maxHeight } = getParallelDisplaySize();
+      preloadParallelImages(currentIdx, maxWidth, maxHeight, undefined, undefined, direction);
     }
-
-    setParallelLoading(false);
   }, [appMode, parallelFilesA, parallelFilesB, parallelIndexA, parallelIndexB, getParallelDisplaySize]);
 
   // 単一画像の読み込み
@@ -2259,7 +2198,7 @@ export default function MangaDiffDetector() {
     }
   };
 
-  // 先読み処理（方向検知 + 優先度付き + PSD並列化）
+  // 先読み処理（方向検知 + 優先度付き + PSD/PDF並列化）
   const preloadParallelImages = useCallback(async (
     currentIdx: number,
     maxWidth: number,
@@ -2272,6 +2211,7 @@ export default function MangaDiffDetector() {
     // 優先度付きパスリスト（先頭が最優先）
     const prioritizedPaths: string[] = [];
     const prioritizedPsdPaths: string[] = [];
+    const prioritizedPdfEntries: { path: string; page: number; splitSide: string | null }[] = [];
 
     // 方向に応じて優先側を先に処理（offset 1から順に、進行方向を優先）
     for (let offset = 1; offset <= preloadRange; offset++) {
@@ -2284,7 +2224,12 @@ export default function MangaDiffDetector() {
           const entry = files[primaryIdx];
           if (entry.type === 'psd') {
             if (!prioritizedPsdPaths.includes(entry.path)) prioritizedPsdPaths.push(entry.path);
-          } else if (entry.type !== 'pdf') {
+          } else if (entry.type === 'pdf' && entry.pdfPage) {
+            const key = `${entry.path}:${entry.pdfPage}:${entry.spreadSide || ''}`;
+            if (!prioritizedPdfEntries.some(e => `${e.path}:${e.page}:${e.splitSide || ''}` === key)) {
+              prioritizedPdfEntries.push({ path: entry.path, page: entry.pdfPage - 1, splitSide: entry.spreadSide || null });
+            }
+          } else {
             if (!prioritizedPaths.includes(entry.path)) prioritizedPaths.push(entry.path);
           }
         }
@@ -2296,7 +2241,12 @@ export default function MangaDiffDetector() {
           const entry = files[secondaryIdx];
           if (entry.type === 'psd') {
             if (!prioritizedPsdPaths.includes(entry.path)) prioritizedPsdPaths.push(entry.path);
-          } else if (entry.type !== 'pdf') {
+          } else if (entry.type === 'pdf' && entry.pdfPage) {
+            const key = `${entry.path}:${entry.pdfPage}:${entry.spreadSide || ''}`;
+            if (!prioritizedPdfEntries.some(e => `${e.path}:${e.page}:${e.splitSide || ''}` === key)) {
+              prioritizedPdfEntries.push({ path: entry.path, page: entry.pdfPage - 1, splitSide: entry.spreadSide || null });
+            }
+          } else {
             if (!prioritizedPaths.includes(entry.path)) prioritizedPaths.push(entry.path);
           }
         }
@@ -2306,6 +2256,24 @@ export default function MangaDiffDetector() {
     // TIFF/PNG/JPGをRust側で並列先読み（優先度順のパスリスト）
     if (prioritizedPaths.length > 0) {
       invoke('preload_images', { paths: prioritizedPaths, maxWidth, maxHeight }).catch(console.error);
+    }
+
+    // PDFページをRust側で先読み → フロントエンドキャッシュ + ブラウザメモリにプリロード
+    for (const pdfEntry of prioritizedPdfEntries) {
+      const key = `${pdfEntry.path}:${pdfEntry.page}:${pdfEntry.splitSide || ''}`;
+      if (pdfUrlCacheRef.current[key]) continue; // 既にキャッシュ済み
+
+      invoke<{ src: string; width: number; height: number }>('render_pdf_page', {
+        path: pdfEntry.path,
+        page: pdfEntry.page,
+        dpi: 300.0,
+        splitSide: pdfEntry.splitSide,
+      }).then(result => {
+        const url = convertFileSrc(result.src);
+        pdfUrlCacheRef.current[key] = url;
+        // ブラウザの画像キャッシュにも事前読み込み（表示時に即描画される）
+        new Image().src = url;
+      }).catch(() => {});
     }
 
     // PSDを優先度順に先読み（バックグラウンド）
@@ -2334,7 +2302,7 @@ export default function MangaDiffDetector() {
     if (parallelFilesA.length === 0 && parallelFilesB.length === 0) return;
 
     const { maxWidth, maxHeight } = getParallelDisplaySize();
-    // 現在位置から前後の画像を先読み
+    // 現在位置から前後の画像を先読み（TIFF/PSD用）
     preloadParallelImages(
       Math.max(parallelIndexA, parallelIndexB),
       maxWidth,
@@ -2343,6 +2311,59 @@ export default function MangaDiffDetector() {
       parallelFilesB
     );
   }, [parallelFilesA, parallelFilesB]); // ファイルリスト変更時のみ発火
+
+  // PDF全ページ一括バックグラウンドレンダリング（PDFロード時に全ページをキャッシュに入れる）
+  useEffect(() => {
+    if (appMode !== 'parallel-view') return;
+
+    // 全PDFエントリを収集（重複排除）
+    const pdfEntries: { path: string; page: number; splitSide: string | null; key: string }[] = [];
+    for (const files of [parallelFilesA, parallelFilesB]) {
+      for (const entry of files) {
+        if (entry.type === 'pdf' && entry.path && entry.pdfPage) {
+          const page = entry.pdfPage - 1;
+          const splitSide = entry.spreadSide || null;
+          const key = `${entry.path}:${page}:${splitSide || ''}`;
+          if (!pdfEntries.some(e => e.key === key)) {
+            pdfEntries.push({ path: entry.path, page, splitSide, key });
+          }
+        }
+      }
+    }
+    if (pdfEntries.length === 0) return;
+
+    let cancelled = false;
+
+    // 現在ページのレンダリング完了を待ってからバックグラウンド開始
+    (async () => {
+      await new Promise(r => setTimeout(r, 300));
+
+      // 2ページずつ並列でバックグラウンドレンダリング
+      for (let i = 0; i < pdfEntries.length; i += 2) {
+        if (cancelled) break;
+
+        const batch = pdfEntries.slice(i, i + 2).filter(e => !pdfUrlCacheRef.current[e.key]);
+        if (batch.length === 0) continue;
+
+        await Promise.all(batch.map(async (entry) => {
+          try {
+            const result = await invoke<{ src: string; width: number; height: number }>('render_pdf_page', {
+              path: entry.path,
+              page: entry.page,
+              dpi: 300.0,
+              splitSide: entry.splitSide,
+            });
+            if (cancelled) return;
+            const url = convertFileSrc(result.src);
+            pdfUrlCacheRef.current[entry.key] = url;
+            new Image().src = url; // ブラウザメモリにもプリロード
+          } catch { /* バックグラウンドなのでエラー無視 */ }
+        }));
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [appMode, parallelFilesA, parallelFilesB]);
 
   // 並列ビューのインデックス変更時に画像を読み込み
   useEffect(() => {
@@ -2377,7 +2398,7 @@ export default function MangaDiffDetector() {
 
     // キャッシュクリア
     pdfCache.clear();
-    setDiffCache({});
+    setDiffCache(prev => { cleanupPageCache(prev); return {}; });
     invoke('clear_image_cache').catch(console.error);
 
     // フォルダパスが保存されている場合、フォルダを再スキャンしてファイルを更新
@@ -2443,7 +2464,7 @@ export default function MangaDiffDetector() {
     // PDFキャッシュをクリア
     pdfCache.clear();
     // diffキャッシュをクリア
-    setDiffCache({});
+    setDiffCache(prev => { cleanupPageCache(prev); return {}; });
     // 並列ビューのイメージキャッシュをクリア
     setParallelImageCache({});
     // Rust側のイメージキャッシュをクリア
@@ -3590,16 +3611,12 @@ export default function MangaDiffDetector() {
   const getDisplayImage = (): string | null => {
     if (!currentPair || currentPair.status !== 'done') return null;
 
+    // PDF-PDFモード: diffCacheからページごとのDataURLを取得
     if (compareMode === 'pdf-pdf') {
       const cacheKey = `${selectedIndex}-${currentPage}`;
       const pageData = diffCache[cacheKey];
-      if (!pageData && currentPage === 1) {
-        if (viewMode === 'A') return currentPair.processedA;
-        if (viewMode === 'B') return currentPair.processedB;
-        return showMarkers && currentPair.diffSrcWithMarkers ? currentPair.diffSrcWithMarkers : currentPair.diffSrc;
-      }
       if (!pageData) return null;
-      if (viewMode === 'A') return pageData.srcA;
+      if (viewMode === 'A' || viewMode === 'A-full') return pageData.srcA;
       if (viewMode === 'B') return pageData.srcB;
       return showMarkers && pageData.diffSrcWithMarkers ? pageData.diffSrcWithMarkers : pageData.diffSrc;
     }
@@ -3623,7 +3640,7 @@ export default function MangaDiffDetector() {
     setParallelFilesB([]);
     setParallelFolderA(null);
     setParallelFolderB(null);
-    setDiffCache({});
+    setDiffCache(prev => { cleanupPageCache(prev); return {}; });
     pdfCache.clear();
     // テキスト照合モードのリセット
     setCompareMode('tiff-tiff');
@@ -3797,6 +3814,7 @@ export default function MangaDiffDetector() {
           dragOverSide={dragOverSide}
           setIsGDriveBrowserOpen={setIsGDriveBrowserOpen}
           diffCache={diffCache}
+          pdfComputingPages={pdfComputingPages}
           onClear={handleClear}
           parallelFolderA={parallelFolderA}
           parallelFolderB={parallelFolderB}
@@ -3876,7 +3894,6 @@ export default function MangaDiffDetector() {
             getCurrentMarkers={getCurrentMarkers}
             getDisplayImage={getDisplayImage}
             getDiffImage={getDiffImage}
-            pdfCanvasRef={pdfCanvasRef}
             preloadProgress={preloadProgress}
             isLoadingPage={isLoadingPage}
             openFolderInExplorer={openFolderInExplorer}
@@ -3975,8 +3992,8 @@ export default function MangaDiffDetector() {
             handleParallelDrop={handleParallelDrop}
             handleSelectParallelFolder={handleSelectParallelFolder}
             handleSelectParallelPdf={handleSelectParallelPdf}
-            parallelPdfCanvasARef={parallelPdfCanvasARef}
-            parallelPdfCanvasBRef={parallelPdfCanvasBRef}
+            parallelPdfImageA={parallelPdfImageA}
+            parallelPdfImageB={parallelPdfImageB}
             parallelMaxIndex={parallelMaxIndex}
             releaseMemoryBeforeMojiQ={releaseMemoryBeforeMojiQ}
             expandPdfToParallelEntries={expandPdfToParallelEntries}

@@ -52,6 +52,8 @@ export interface PageCache {
   diffSrcWithMarkers?: string;
   hasDiff: boolean;
   markers?: DiffMarker[];
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
 // ============== 並列ビューモード用の型定義 ==============

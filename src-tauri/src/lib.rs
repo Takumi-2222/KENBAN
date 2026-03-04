@@ -557,7 +557,9 @@ fn cleanup_preview_cache() -> Result<u32, String> {
     if let Ok(entries) = fs::read_dir(&temp_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jpg") {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            // jpg, png, tmp すべてを対象（diff画像のPNGや書き込み途中のtmpも含む）
+            if matches!(ext, "jpg" | "png" | "tmp") {
                 if let Ok(metadata) = path.metadata() {
                     if let Ok(modified) = metadata.modified() {
                         if let Ok(age) = now.duration_since(modified) {
@@ -944,25 +946,61 @@ fn decode_psd_to_image(path: &str) -> Result<DynamicImage, String> {
     }
 }
 
-// RGBA画像をbase64 data URLにエンコード
-fn encode_to_data_url(img: &DynamicImage) -> Result<String, String> {
-    let mut png_data = Cursor::new(Vec::new());
-    img.write_to(&mut png_data, image::ImageFormat::Png)
-        .map_err(|e| format!("PNG encode error: {}", e))?;
-    let base64_str = STANDARD.encode(png_data.get_ref());
-    Ok(format!("data:image/png;base64,{}", base64_str))
+// DynamicImageをJPEG 85%でtempファイルに書き出し、パスを返す（高速エンコード＋IPC転送不要）
+fn encode_to_jpeg_temp(img: &DynamicImage, cache_key: &str) -> Result<String, String> {
+    let temp_dir = get_kenban_temp_dir()?;
+    let filename = {
+        let mut hasher = DefaultHasher::new();
+        cache_key.hash(&mut hasher);
+        format!("kenban_diff_{:016x}.jpg", hasher.finish())
+    };
+    let file_path = temp_dir.join(&filename);
+
+    if file_path.exists() {
+        return Ok(file_path.to_string_lossy().to_string());
+    }
+
+    let rgb = img.to_rgb8();
+    let tmp_path = temp_dir.join(format!("{}.tmp", filename));
+    let file = fs::File::create(&tmp_path)
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
+        std::io::BufWriter::new(file), 85
+    );
+    rgb.write_with_encoder(encoder)
+        .map_err(|e| format!("JPEG encode error: {}", e))?;
+    fs::rename(&tmp_path, &file_path)
+        .map_err(|e| format!("Failed to rename temp file: {}", e))?;
+
+    Ok(file_path.to_string_lossy().to_string())
 }
 
-// RGBAバッファから直接data URLにエンコード（DynamicImage変換なし）
-fn encode_rgba_to_data_url(buf: &[u8], width: u32, height: u32) -> Result<String, String> {
+// RGBAバッファをPNGでtempファイルに書き出し、パスを返す（差分画像用）
+fn encode_rgba_to_png_temp(buf: &[u8], width: u32, height: u32, cache_key: &str) -> Result<String, String> {
+    let temp_dir = get_kenban_temp_dir()?;
+    let filename = {
+        let mut hasher = DefaultHasher::new();
+        cache_key.hash(&mut hasher);
+        format!("kenban_diff_{:016x}.png", hasher.finish())
+    };
+    let file_path = temp_dir.join(&filename);
+
+    if file_path.exists() {
+        return Ok(file_path.to_string_lossy().to_string());
+    }
+
     let img: ImageBuffer<Rgba<u8>, &[u8]> =
         ImageBuffer::from_raw(width, height, buf)
             .ok_or_else(|| "Failed to create image buffer".to_string())?;
-    let mut png_data = Cursor::new(Vec::new());
-    img.write_to(&mut png_data, image::ImageFormat::Png)
+    let tmp_path = temp_dir.join(format!("{}.tmp", filename));
+    let file = fs::File::create(&tmp_path)
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    img.write_to(&mut std::io::BufWriter::new(file), image::ImageFormat::Png)
         .map_err(|e| format!("PNG encode error: {}", e))?;
-    let base64_str = STANDARD.encode(png_data.get_ref());
-    Ok(format!("data:image/png;base64,{}", base64_str))
+    fs::rename(&tmp_path, &file_path)
+        .map_err(|e| format!("Failed to rename temp file: {}", e))?;
+
+    Ok(file_path.to_string_lossy().to_string())
 }
 
 struct DiffPixel {
@@ -1278,12 +1316,15 @@ fn compute_diff_simple(
     // マーカークラスタリング
     let markers = cluster_markers(&diff_pixels, 200, 1, 300.0);
 
-    // 3画像を並列エンコード
+    // 3画像を並列エンコード → JPEG tempファイル（A/B）+ PNG tempファイル（diff）
+    let cache_a = format!("simple_a_{}", path_a);
+    let cache_b = format!("simple_b_{}", path_b);
+    let cache_d = format!("simple_d_{}_{}", path_a, path_b);
     let (src_a_result, (src_b_result, diff_result)) = rayon::join(
-        || encode_to_data_url(&img_a),
+        || encode_to_jpeg_temp(&img_a, &cache_a),
         || rayon::join(
-            || encode_to_data_url(&img_b),
-            || encode_rgba_to_data_url(&diff_buf, width, height),
+            || encode_to_jpeg_temp(&img_b, &cache_b),
+            || encode_rgba_to_png_temp(&diff_buf, width, height, &cache_d),
         ),
     );
 
@@ -1342,15 +1383,19 @@ fn compute_diff_heatmap(
         0.0
     };
 
-    // 4画像を並列エンコード
+    // 4画像を並列エンコード → JPEG tempファイル（A/B/processedA）+ PNG tempファイル（diff）
+    let cache_a = format!("heatmap_a_{}", psd_path);
+    let cache_b = format!("heatmap_b_{}", tiff_path);
+    let cache_pa = format!("heatmap_pa_{}_{}", psd_path, tiff_path);
+    let cache_d = format!("heatmap_d_{}_{}", psd_path, tiff_path);
     let ((src_a_result, src_b_result), (processed_a_result, diff_result)) = rayon::join(
         || rayon::join(
-            || encode_to_data_url(&psd_img),
-            || encode_to_data_url(&tiff_img),
+            || encode_to_jpeg_temp(&psd_img, &cache_a),
+            || encode_to_jpeg_temp(&tiff_img, &cache_b),
         ),
         || rayon::join(
-            || encode_to_data_url(&processed_psd),
-            || encode_rgba_to_data_url(&heatmap_buf, tiff_w, tiff_h),
+            || encode_to_jpeg_temp(&processed_psd, &cache_pa),
+            || encode_rgba_to_png_temp(&heatmap_buf, tiff_w, tiff_h, &cache_d),
         ),
     );
 
@@ -1472,6 +1517,175 @@ fn check_diff_heatmap(
     })
 }
 
+// ============== PDF差分計算 (PDFium) ==============
+
+use pdfium_render::prelude::*;
+
+/// PDFiumライブラリのバインディングを取得
+fn get_pdfium() -> Result<Pdfium, String> {
+    // 実行ファイルと同じディレクトリからpdfium.dllを探す
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| format!("Failed to get exe path: {}", e))?
+        .parent()
+        .ok_or_else(|| "Failed to get exe directory".to_string())?
+        .to_path_buf();
+
+    let bindings = Pdfium::bind_to_library(
+        Pdfium::pdfium_platform_library_name_at_path(&exe_dir)
+    ).or_else(|_| Pdfium::bind_to_system_library())
+        .map_err(|e| format!("Failed to load PDFium library: {}. Place pdfium.dll next to the executable.", e))?;
+
+    Ok(Pdfium::new(bindings))
+}
+
+/// PDFiumで指定ページをRGBA画像にレンダリング
+fn render_pdf_page_pdfium(pdfium: &Pdfium, path: &str, page: u32, dpi: f32) -> Result<(Vec<u8>, u32, u32), String> {
+    let doc = pdfium.load_pdf_from_file(path, None)
+        .map_err(|e| format!("Failed to open PDF '{}': {}", path, e))?;
+
+    let page_count = doc.pages().len() as u32;
+    if page >= page_count {
+        return Err(format!("Page {} out of range (total: {})", page, page_count));
+    }
+
+    let pg = doc.pages().get(page as u16)
+        .map_err(|e| format!("Failed to load page {}: {}", page, e))?;
+
+    let scale = dpi / 72.0;
+    let config = PdfRenderConfig::new()
+        .scale_page_by_factor(scale)
+        .use_print_quality(true);
+
+    let bitmap = pg.render_with_config(&config)
+        .map_err(|e| format!("Failed to render page {}: {}", page, e))?;
+
+    let width = bitmap.width() as u32;
+    let height = bitmap.height() as u32;
+    let rgba = bitmap.as_rgba_bytes();
+
+    Ok((rgba, width, height))
+}
+
+// PDF-PDF差分計算（PDFiumレンダリング + rayon並列差分）
+#[tauri::command]
+fn compute_pdf_diff(
+    path_a: String, path_b: String, page: u32, dpi: f32, threshold: u8,
+) -> Result<DiffSimpleResult, String> {
+    let pdfium = get_pdfium()?;
+
+    let (samples_a, wa, ha) = render_pdf_page_pdfium(&pdfium, &path_a, page, dpi)?;
+    let (samples_b, wb, hb) = render_pdf_page_pdfium(&pdfium, &path_b, page, dpi)?;
+
+    let width = wa.max(wb);
+    let height = ha.max(hb);
+
+    // サイズが異なる場合はDynamicImageでリサイズ
+    let rgba_a = if wa != width || ha != height {
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_raw(wa, ha, samples_a)
+                .ok_or_else(|| "Failed to create image buffer A".to_string())?;
+        let dyn_img = DynamicImage::ImageRgba8(img);
+        dyn_img.resize_exact(width, height, FilterType::Triangle).to_rgba8()
+    } else {
+        ImageBuffer::from_raw(wa, ha, samples_a)
+            .ok_or_else(|| "Failed to create image buffer A".to_string())?
+    };
+
+    let rgba_b = if wb != width || hb != height {
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_raw(wb, hb, samples_b)
+                .ok_or_else(|| "Failed to create image buffer B".to_string())?;
+        let dyn_img = DynamicImage::ImageRgba8(img);
+        dyn_img.resize_exact(width, height, FilterType::Triangle).to_rgba8()
+    } else {
+        ImageBuffer::from_raw(wb, hb, samples_b)
+            .ok_or_else(|| "Failed to create image buffer B".to_string())?
+    };
+
+    // rayon並列差分計算
+    let (diff_buf, diff_count, diff_pixels) =
+        diff_simple_core(rgba_a.as_raw(), rgba_b.as_raw(), width, height, threshold);
+
+    // マーカークラスタリング
+    let markers = cluster_markers(&diff_pixels, 200, 1, 300.0);
+
+    // 3画像を並列エンコード → JPEG tempファイル（A/B）+ PNG tempファイル（diff）
+    let img_a = DynamicImage::ImageRgba8(rgba_a);
+    let img_b = DynamicImage::ImageRgba8(rgba_b);
+    let cache_a = format!("pdf_a_{}_p{}", path_a, page);
+    let cache_b = format!("pdf_b_{}_p{}", path_b, page);
+    let cache_d = format!("pdf_d_{}_{}_p{}", path_a, path_b, page);
+    let (src_a_result, (src_b_result, diff_result)) = rayon::join(
+        || encode_to_jpeg_temp(&img_a, &cache_a),
+        || rayon::join(
+            || encode_to_jpeg_temp(&img_b, &cache_b),
+            || encode_rgba_to_png_temp(&diff_buf, width, height, &cache_d),
+        ),
+    );
+
+    Ok(DiffSimpleResult {
+        src_a: src_a_result?,
+        src_b: src_b_result?,
+        diff_src: diff_result?,
+        has_diff: diff_count > 0,
+        diff_count,
+        markers,
+        image_width: width,
+        image_height: height,
+    })
+}
+
+// PDFの指定ページを画像としてレンダリング（並列ビュー用）
+#[derive(Serialize)]
+struct PdfPageImage {
+    src: String,
+    width: u32,
+    height: u32,
+}
+
+#[tauri::command]
+fn render_pdf_page(
+    path: String, page: u32, dpi: f32, split_side: Option<String>,
+) -> Result<PdfPageImage, String> {
+    let pdfium = get_pdfium()?;
+    let (samples, width, height) = render_pdf_page_pdfium(&pdfium, &path, page, dpi)?;
+
+    // 見開き分割: 左右半分を切り出し
+    if let Some(ref side) = split_side {
+        let half_width = width / 2;
+        let offset_x = if side == "right" { half_width } else { 0 };
+        let mut split_buf = vec![0u8; (half_width as usize) * (height as usize) * 4];
+        for y in 0..height as usize {
+            let src_offset = (y * width as usize + offset_x as usize) * 4;
+            let dst_offset = y * half_width as usize * 4;
+            split_buf[dst_offset..dst_offset + half_width as usize * 4]
+                .copy_from_slice(&samples[src_offset..src_offset + half_width as usize * 4]);
+        }
+        let split_img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_raw(half_width, height, split_buf)
+                .ok_or_else(|| "Failed to create split image buffer".to_string())?;
+        let cache_key = format!("pdfpage_{}_p{}_{}", path, page, side);
+        let src = encode_to_jpeg_temp(&DynamicImage::ImageRgba8(split_img), &cache_key)?;
+        return Ok(PdfPageImage { src, width: half_width, height });
+    }
+
+    let full_img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+        ImageBuffer::from_raw(width, height, samples)
+            .ok_or_else(|| "Failed to create image buffer".to_string())?;
+    let cache_key = format!("pdfpage_{}_p{}", path, page);
+    let src = encode_to_jpeg_temp(&DynamicImage::ImageRgba8(full_img), &cache_key)?;
+    Ok(PdfPageImage { src, width, height })
+}
+
+// PDFの総ページ数を取得
+#[tauri::command]
+fn get_pdf_page_count(path: String) -> Result<u32, String> {
+    let pdfium = get_pdfium()?;
+    let doc = pdfium.load_pdf_from_file(&path, None)
+        .map_err(|e| format!("Failed to open PDF '{}': {}", path, e))?;
+    Ok(doc.pages().len() as u32)
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -1524,6 +1738,9 @@ pub fn run() {
             compute_diff_heatmap,
             check_diff_simple,
             check_diff_heatmap,
+            compute_pdf_diff,
+            render_pdf_page,
+            get_pdf_page_count,
             get_cli_args,
             read_text_file,
             write_text_file,

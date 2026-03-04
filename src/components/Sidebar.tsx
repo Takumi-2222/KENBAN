@@ -50,6 +50,7 @@ interface SidebarProps {
   dragOverSide: string | null;
   setIsGDriveBrowserOpen: (v: boolean) => void;
   diffCache: Record<string, PageCache>;
+  pdfComputingPages: Set<string>;
   onClear: () => void;
   parallelFolderA: string | null;
   parallelFolderB: string | null;
@@ -127,6 +128,7 @@ export default function Sidebar({
   dragOverSide,
   setIsGDriveBrowserOpen,
   diffCache,
+  pdfComputingPages,
   onClear,
   parallelFolderA,
   parallelFolderB,
@@ -459,6 +461,8 @@ export default function Sidebar({
                       <span className={isCurrentPage ? 'text-rose-300' : 'text-neutral-500'}>P.{pageNum}</span>
                       {pageData ? (
                         pageData.hasDiff ? <AlertTriangle size={10} className="text-red-400" /> : <CheckCircle size={10} className="text-green-400" />
+                      ) : pdfComputingPages.has(cacheKey) ? (
+                        <Loader2 size={10} className="text-rose-300 animate-spin" />
                       ) : (
                         <span className="text-neutral-600 text-[10px]">...</span>
                       )}

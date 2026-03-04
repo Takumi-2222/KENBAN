@@ -19,6 +19,7 @@ const PDFJS_WASM_URL = '/pdfjs-wasm/';
 const PDF_COMPRESS_THRESHOLD = 500 * 1024 * 1024; // 500MB以上でCanvas圧縮
 const PDF_AUTO_OPTIMIZE_ENABLED = true; // MojiQと同様に有効化
 const PDF_SIZE_WARNING_THRESHOLD = 100 * 1024 * 1024; // 100MB以上で警告
+const PDF_OPTIMIZE_MIN_SIZE = 10 * 1024 * 1024; // 10MB未満は最適化スキップ（効果が薄い）
 
 // PDFファイルサイズチェック（100MB以上で拒否）
 export const checkPdfFileSize = (file: File): boolean => {
@@ -284,8 +285,8 @@ export class PdfCacheManager {
           console.error('[PdfCache] Heavy compression failed, using original:', err);
           arrayBuffer = await file.arrayBuffer();
         }
-      } else {
-        // 500MB未満: pdf-libによる軽量最適化（MojiQと同様に全PDFに適用）
+      } else if (file.size >= PDF_OPTIMIZE_MIN_SIZE) {
+        // 10MB〜500MB: pdf-libによる軽量最適化（小さいPDFはスキップ）
         try {
           console.log(`[PdfCache] Optimizing PDF: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
           arrayBuffer = await optimizePdfResources(arrayBuffer, (message, current, total) => {
@@ -308,7 +309,8 @@ export class PdfCacheManager {
   }
 
   // ImageBitmapを取得（MojiQと同様のCanvas直接レンダリング）
-  async renderPageBitmap(file: File, pageNum: number, scale = 8.0): Promise<BitmapCacheEntry | null> {
+  // scale 4.0 ≒ 300 DPI（印刷品質相当）: 8.0だとCanvas巨大化による品質劣化・メモリ圧迫が発生
+  async renderPageBitmap(file: File, pageNum: number, scale = 4.0): Promise<BitmapCacheEntry | null> {
     const fileId = this.getFileId(file);
     const cacheKey = `${fileId}-${pageNum}`;
 
@@ -356,7 +358,7 @@ export class PdfCacheManager {
     file: File,
     pageNum: number,
     side: 'left' | 'right',
-    scale = 8.0
+    scale = 4.0
   ): Promise<BitmapCacheEntry | null> {
     const fileId = this.getFileId(file);
     const cacheKey = `${fileId}-${pageNum}-${side}`;
@@ -417,8 +419,8 @@ export class PdfCacheManager {
     }
   }
 
-  // 後方互換性のためDataURL版も残す（差分計算等で使用）
-  async renderPage(file: File, pageNum: number, scale = 8.0): Promise<string | null> {
+  // 後方互換性のためDataURL版も残す（並列ビュー等で使用）
+  async renderPage(file: File, pageNum: number, scale = 4.0): Promise<string | null> {
     const entry = await this.renderPageBitmap(file, pageNum, scale);
     if (!entry) return null;
 

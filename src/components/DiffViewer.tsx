@@ -32,7 +32,6 @@ interface DiffViewerProps {
   getCurrentMarkers: () => DiffMarker[];
   getDisplayImage: () => string | null;
   getDiffImage: () => string | null;
-  pdfCanvasRef: React.RefObject<HTMLCanvasElement | null>;
   preloadProgress: { loaded: number; total: number };
   isLoadingPage: boolean;
   openFolderInExplorer: (path: string) => void;
@@ -115,7 +114,6 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
     handleWheelPageTurn,
     getCurrentMarkers,
     getDisplayImage,
-    pdfCanvasRef,
     preloadProgress,
     isLoadingPage,
     openFolderInExplorer,
@@ -444,17 +442,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                     onDoubleClick={handleImageDoubleClick}
                     style={{ cursor: zoom > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default' }}
                   >
-                    {/* PDF: Canvas direct rendering */}
-                    {compareMode === 'pdf-pdf' && viewMode !== 'diff' ? (
-                      <canvas
-                        ref={pdfCanvasRef}
-                        className="max-w-full max-h-full object-contain shadow-2xl bg-white select-none"
-                        style={{
-                          transform: `scale(${zoom}) translate(${panPosition.x / zoom}px, ${panPosition.y / zoom}px)`,
-                          transformOrigin: 'center center',
-                        }}
-                      />
-                    ) : getDisplayImage() ? (
+                    {getDisplayImage() ? (
                       <img
                         src={getDisplayImage()!}
                         alt="View"
