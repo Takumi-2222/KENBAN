@@ -48,7 +48,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "icons/icon.ico": "KENBAN.ico"
+      "icons/icon.ico": "KENBAN.ico",
+      "pdfium.dll": "pdfium.dll"
     },
     "windows": {
       "webviewInstallMode": {
