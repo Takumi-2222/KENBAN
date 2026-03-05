@@ -89,6 +89,7 @@ interface ParallelViewerProps {
   setShowHelp: (v: boolean) => void;
   parallelDropZoneARef: React.RefObject<HTMLDivElement | null>;
   parallelDropZoneBRef: React.RefObject<HTMLDivElement | null>;
+  tauriDragOverSide: string | null;
 }
 
 const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
@@ -163,30 +164,40 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
     setShowHelp,
     parallelDropZoneARef,
     parallelDropZoneBRef,
+    tauriDragOverSide,
   } = props;
 
-  // ローカルstate: ドラッグオーバー側
-  const [dragOverSide, setDragOverSide] = useState<string | null>(null);
+  // ローカルstate: ドラッグオーバー側（HTMLドラッグ + Tauriネイティブドラッグを統合）
+  const [localDragOverSide, setLocalDragOverSide] = useState<string | null>(null);
+  const dragOverSide = localDragOverSide || tauriDragOverSide;
 
   // PDF canvas同期描画（両パネルを同一フレームで同時更新）
   const pdfCanvasRefA = useRef<HTMLCanvasElement>(null);
   const pdfCanvasRefB = useRef<HTMLCanvasElement>(null);
   const pdfDrawVersionRef = useRef(0);
 
-  // canvasに高品質描画（表示サイズ×DPRで描画し、CSS縮小による画質劣化を回避）
-  const drawToCanvas = useCallback((canvas: HTMLCanvasElement, img: HTMLImageElement) => {
+  // コンテナのコンテンツ領域を計測（padding除外、canvasを0にして親の本来のサイズを取得）
+  const measureContainer = useCallback((canvas: HTMLCanvasElement) => {
     const parent = canvas.parentElement;
-    if (!parent) return;
-
-    const dpr = window.devicePixelRatio || 1;
-
-    // canvasを一時的に0にして、親コンテナの本来のサイズを計測（膨張防止）
+    if (!parent) return { w: 0, h: 0 };
     canvas.style.width = '0px';
     canvas.style.height = '0px';
-    const maxW = parent.clientWidth;
-    const maxH = parent.clientHeight;
+    const cs = getComputedStyle(parent);
+    const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+    const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    return { w: parent.clientWidth - padX, h: parent.clientHeight - padY };
+  }, []);
 
-    // object-contain相当: アスペクト比を維持して親に収める
+  // canvasに高品質描画（統一スケールで同じ画像サイズを同じ表示サイズにする）
+  const drawToCanvasWithScale = useCallback((
+    canvas: HTMLCanvasElement,
+    img: HTMLImageElement,
+    maxW: number,
+    maxH: number,
+  ) => {
+    const dpr = window.devicePixelRatio || 1;
+
+    // object-contain相当: アスペクト比を維持して指定領域に収める
     const imgRatio = img.naturalWidth / img.naturalHeight;
     const containerRatio = maxW / maxH;
     let displayW: number, displayH: number;
@@ -235,11 +246,30 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
       // 同一requestAnimationFrame内で両canvasに描画 → 同じフレームで表示
       requestAnimationFrame(() => {
         if (version !== pdfDrawVersionRef.current) return;
-        if (imgA && pdfCanvasRefA.current) drawToCanvas(pdfCanvasRefA.current, imgA);
-        if (imgB && pdfCanvasRefB.current) drawToCanvas(pdfCanvasRefB.current, imgB);
+
+        const canvasA = pdfCanvasRefA.current;
+        const canvasB = pdfCanvasRefB.current;
+
+        // 両パネルのコンテナサイズを計測
+        const sizeA = canvasA ? measureContainer(canvasA) : null;
+        const sizeB = canvasB ? measureContainer(canvasB) : null;
+
+        // 統一スケール: 両パネルのコンテナサイズの小さい方を使い、
+        // 同じキャンバスサイズの画像が同じ表示サイズになるようにする
+        const unifiedW = Math.min(sizeA?.w ?? Infinity, sizeB?.w ?? Infinity);
+        const unifiedH = Math.min(sizeA?.h ?? Infinity, sizeB?.h ?? Infinity);
+        const maxW = unifiedW === Infinity ? 0 : unifiedW;
+        const maxH = unifiedH === Infinity ? 0 : unifiedH;
+
+        if (imgA && canvasA && maxW > 0 && maxH > 0) {
+          drawToCanvasWithScale(canvasA, imgA, maxW, maxH);
+        }
+        if (imgB && canvasB && maxW > 0 && maxH > 0) {
+          drawToCanvasWithScale(canvasB, imgB, maxW, maxH);
+        }
       });
     })();
-  }, [parallelPdfImageA, parallelPdfImageB, drawToCanvas]);
+  }, [parallelPdfImageA, parallelPdfImageB, drawToCanvasWithScale, measureContainer]);
 
   // ファイルパスから親フォルダパスを取得
   const getDirectoryFromPath = useCallback((filePath: string): string | null => {
@@ -606,10 +636,10 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
             {/* 左パネル (フォルダ/PDFA) */}
             <div
               ref={parallelDropZoneARef}
-              className={`flex-1 flex flex-col border-r border-white/[0.04] ${dragOverSide === 'parallelA' ? 'ring-2 ring-blue-500 ring-inset bg-blue-900/20' : ''} ${!parallelSyncMode && parallelActivePanel === 'A' ? 'ring-2 ring-blue-400 ring-inset' : ''}`}
-              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverSide('parallelA'); }}
-              onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverSide(null); }}
-              onDrop={(e) => { handleParallelDrop(e, 'A'); setDragOverSide(null); }}
+              className={`flex-1 flex flex-col border-r border-white/[0.04] transition-all duration-200 ${dragOverSide === 'parallelA' ? 'border-r-[rgba(124,156,196,0.35)] bg-[rgba(124,156,196,0.06)]' : ''} ${!parallelSyncMode && parallelActivePanel === 'A' ? 'ring-1 ring-[rgba(124,156,196,0.25)] ring-inset' : ''}`}
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setLocalDragOverSide('parallelA'); }}
+              onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); if (!e.currentTarget.contains(e.relatedTarget as Node)) setLocalDragOverSide(null); }}
+              onDrop={(e) => { handleParallelDrop(e, 'A'); setLocalDragOverSide(null); }}
               onClick={() => !parallelSyncMode && setParallelActivePanel('A')}
             >
               {!isFullscreen && (
@@ -691,8 +721,8 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
               >
                 {/* ドラッグオーバー時のオーバーレイ */}
                 {dragOverSide === 'parallelA' && (
-                  <div className="absolute inset-0 bg-blue-600/50 flex items-center justify-center z-10 pointer-events-none">
-                    <div className="bg-blue-800/90 text-white px-6 py-3 rounded-lg shadow-xl text-lg font-bold">
+                  <div className="absolute inset-0 bg-[rgba(124,156,196,0.08)] backdrop-blur-[1px] flex items-center justify-center z-10 pointer-events-none">
+                    <div className="bg-neutral-800/90 backdrop-blur-md text-blue-400 px-5 py-2.5 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-[rgba(124,156,196,0.20)] text-sm font-medium">
                       ドロップで切り替え
                     </div>
                   </div>
@@ -818,10 +848,10 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
             {/* 右パネル (フォルダ/PDFB) */}
             <div
               ref={parallelDropZoneBRef}
-              className={`flex-1 flex flex-col ${dragOverSide === 'parallelB' ? 'ring-2 ring-green-500 ring-inset bg-green-900/20' : ''} ${!parallelSyncMode && parallelActivePanel === 'B' ? 'ring-2 ring-green-400 ring-inset' : ''}`}
-              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverSide('parallelB'); }}
-              onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverSide(null); }}
-              onDrop={(e) => { handleParallelDrop(e, 'B'); setDragOverSide(null); }}
+              className={`flex-1 flex flex-col transition-all duration-200 ${dragOverSide === 'parallelB' ? 'border-l border-l-[rgba(124,184,140,0.35)] bg-[rgba(124,184,140,0.06)]' : ''} ${!parallelSyncMode && parallelActivePanel === 'B' ? 'ring-1 ring-[rgba(124,184,140,0.25)] ring-inset' : ''}`}
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setLocalDragOverSide('parallelB'); }}
+              onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); if (!e.currentTarget.contains(e.relatedTarget as Node)) setLocalDragOverSide(null); }}
+              onDrop={(e) => { handleParallelDrop(e, 'B'); setLocalDragOverSide(null); }}
               onClick={() => !parallelSyncMode && setParallelActivePanel('B')}
             >
               {!isFullscreen && (
@@ -903,8 +933,8 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
               >
                 {/* ドラッグオーバー時のオーバーレイ */}
                 {dragOverSide === 'parallelB' && (
-                  <div className="absolute inset-0 bg-green-600/50 flex items-center justify-center z-10 pointer-events-none">
-                    <div className="bg-green-800/90 text-white px-6 py-3 rounded-lg shadow-xl text-lg font-bold">
+                  <div className="absolute inset-0 bg-[rgba(124,184,140,0.08)] backdrop-blur-[1px] flex items-center justify-center z-10 pointer-events-none">
+                    <div className="bg-neutral-800/90 backdrop-blur-md text-green-400 px-5 py-2.5 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-[rgba(124,184,140,0.20)] text-sm font-medium">
                       ドロップで切り替え
                     </div>
                   </div>

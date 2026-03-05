@@ -3984,6 +3984,7 @@ export default function MangaDiffDetector() {
             setShowHelp={setShowHelp}
             parallelDropZoneARef={parallelDropZoneARef}
             parallelDropZoneBRef={parallelDropZoneBRef}
+            tauriDragOverSide={dragOverSide}
           />
         )}
       </div>
