@@ -219,6 +219,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                       }, 100);
                     } else {
                       console.warn('[MojiQ] DiffViewer: filePath is undefined', pdfFile);
+                      alert('MojiQ連携エラー: PDFファイルのパスが取得できませんでした。ファイルを再読み込みしてください。');
                     }
                   }}
                   disabled={!currentPair || currentPair.status !== 'done'}

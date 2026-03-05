@@ -639,9 +639,9 @@ export default function MangaDiffDetector() {
       const ext = dotIndex > 0 ? name.substring(dotIndex + 1).toLowerCase() : '';
 
       try {
-        // PSDファイルはRust側で読むので、ここではダミーのFileを作成してパスだけ保持
-        if (ext === 'psd') {
-          const file = new File([], name, { type: 'image/vnd.adobe.photoshop' }) as FileWithPath;
+        // PSD/PDFファイルはRust側で処理するので、ダミーのFileを作成してパスだけ保持
+        if (ext === 'psd' || ext === 'pdf') {
+          const file = new File([], name, { type: mimeTypes[ext] || 'application/octet-stream' }) as FileWithPath;
           file.filePath = filePath;
           return file;
         }
@@ -1878,28 +1878,8 @@ export default function MangaDiffDetector() {
     try {
       const fileName = pdfPath.split(/[/\\]/).pop() || 'PDF';
 
-      // PDFページ数を取得
-      let numPages: number;
-      if (droppedFile) {
-        // ドロップされたファイルのサイズチェック
-        if (!checkPdfFileSize(droppedFile)) {
-          return; // キャンセルされた場合は処理中断
-        }
-        const cached = await pdfCache.getDocument(droppedFile);
-        numPages = cached.numPages;
-      } else {
-        // ファイルパスから読み込み
-        const response = await tauriReadFile(pdfPath);
-        const blob = new Blob([response.buffer], { type: 'application/pdf' });
-        const file = new File([blob], fileName, { type: 'application/pdf' });
-        // ファイルサイズチェック（100MB以上で警告）
-        if (!checkPdfFileSize(file)) {
-          return; // キャンセルされた場合は処理中断
-        }
-        const cached = await pdfCache.getDocument(file);
-        numPages = cached.numPages;
-        droppedFile = file;
-      }
+      // PDFページ数をRust PDFium経由で取得
+      const numPages = await invoke<number>('get_pdf_page_count', { path: pdfPath });
 
       // 各ページをエントリとして展開
       const entries: ParallelFileEntry[] = [];
@@ -3550,6 +3530,7 @@ export default function MangaDiffDetector() {
           }, 100);
         } else if (pdfFile) {
           console.warn('[MojiQ] App Q-key diff: filePath is undefined', { filePath: pdfFile?.filePath, name: pdfFile?.name });
+          alert('MojiQ連携エラー: PDFファイルのパスが取得できませんでした。ファイルを再読み込みしてください。');
         }
       }
       // Cキー: 修正指示モード（即座にScreenshotEditorを開く）

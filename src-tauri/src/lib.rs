@@ -319,6 +319,16 @@ fn find_mojiq_path() -> Option<PathBuf> {
     // 4. デスクトップ > MojiQ（開発用）
     if let Some(desktop) = dirs::desktop_dir() {
         candidates.push(desktop.join("MojiQ").join("dist").join("win-unpacked").join("MojiQ.exe"));
+        // バージョン付きフォルダ（ver_X.XX\MojiQ）もスキャン
+        if let Ok(entries) = std::fs::read_dir(&desktop) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with("ver_") {
+                    candidates.push(entry.path().join("MojiQ").join("dist").join("win-unpacked").join("MojiQ.exe"));
+                }
+            }
+        }
     }
 
     // 最初に見つかったパスを返す
