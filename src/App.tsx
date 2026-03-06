@@ -310,7 +310,9 @@ export default function MangaDiffDetector() {
       } catch (err) {
         console.error('CLI diff load error:', err);
       } finally {
-        cliInitRef.current = false;
+        // React 18のバッチ更新後（次フレーム）にリセット — 同期的にfalseにすると
+        // compareModeのuseEffect(リセット処理)がcliInitRef=falseの状態で走ってしまう
+        setTimeout(() => { cliInitRef.current = false; }, 0);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
