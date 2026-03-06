@@ -2,7 +2,7 @@
 // PSD テキスト抽出 + diff 計算を Worker スレッドで実行する
 
 import { useRef, useCallback, useEffect } from 'react';
-import type { ExtractRequest, WorkerResponse } from '../workers/textExtractWorker';
+import type { ExtractRequest, ReassignRequest, WorkerResponse } from '../workers/textExtractWorker';
 import type { ExtractedTextLayer, DiffPart } from '../types';
 
 export interface WorkerExtractResult {
@@ -12,6 +12,16 @@ export interface WorkerExtractResult {
   psdHeight: number;
   diffResult: { psd: DiffPart[]; memo: DiffPart[] } | null;
   sharedGroupDiffs?: { pageIdx: number; diff: { psd: DiffPart[]; memo: DiffPart[] } }[];
+}
+
+export interface WorkerReassignResult {
+  updates: Array<{
+    idx: number;
+    memoText: string;
+    memoShared: boolean;
+    memoSharedGroup: number[];
+    diffResult: { psd: DiffPart[]; memo: DiffPart[] } | null;
+  }>;
 }
 
 // Worker1リクエストあたりのタイムアウト（ms）
@@ -60,6 +70,8 @@ export function useTextExtractWorker() {
           diffResult: msg.diffResult,
           sharedGroupDiffs: msg.sharedGroupDiffs,
         });
+      } else if (msg.type === 'reassign_result') {
+        pending.resolve(msg as any);
       } else {
         pending.reject(new Error(msg.message));
       }
@@ -171,6 +183,47 @@ export function useTextExtractWorker() {
     });
   }, [initWorker]);
 
+  // メモ再割り当て + diff再計算をWorkerにオフロード
+  const reassignDiffs = useCallback(async (
+    pages: ReassignRequest['pages'],
+    sections: ReassignRequest['sections'],
+  ): Promise<WorkerReassignResult> => {
+    let worker = workerRef.current;
+    if (!worker) {
+      if (disposedRef.current) throw new Error('Worker disposed');
+      worker = initWorker();
+    }
+
+    const id = nextIdRef.current++;
+
+    return new Promise<WorkerReassignResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const pending = pendingRef.current.get(id);
+        if (pending) {
+          pendingRef.current.delete(id);
+          pending.reject(new Error('Worker reassign request timed out'));
+          if (!disposedRef.current) {
+            if (workerRef.current) {
+              workerRef.current.terminate();
+              workerRef.current = null;
+            }
+          }
+        }
+      }, WORKER_TIMEOUT_MS);
+
+      pendingRef.current.set(id, { resolve: resolve as any, reject, timer });
+
+      const request: ReassignRequest = { type: 'reassign', id, pages, sections };
+      try {
+        worker.postMessage(request);
+      } catch (err) {
+        clearTimeout(timer);
+        pendingRef.current.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }, [initWorker]);
+
   // 全pending requestをキャンセル
   const cancelAll = useCallback(() => {
     for (const [, pending] of pendingRef.current) {
@@ -180,5 +233,5 @@ export function useTextExtractWorker() {
     pendingRef.current.clear();
   }, []);
 
-  return { extractText, cancelAll };
+  return { extractText, reassignDiffs, cancelAll };
 }

@@ -106,7 +106,7 @@ export default function MangaDiffDetector() {
   const [textVerifyHasUnsavedChanges, setTextVerifyHasUnsavedChanges] = useState(false);
   const [textVerifyUndoStack, setTextVerifyUndoStack] = useState<string[]>([]);
   const UNDO_MAX = 50;
-  const { extractText: workerExtractText, cancelAll: cancelWorker } = useTextExtractWorker();
+  const { extractText: workerExtractText, reassignDiffs: workerReassignDiffs, cancelAll: cancelWorker } = useTextExtractWorker();
   // extractedLayersキャッシュ: State配列ではなくrefで管理（メモリ削減）
   // 現在ページのみstateに反映し、他はキャッシュから復元
   const layerCacheRef = useRef<Map<number, import('./types').ExtractedTextLayer[]>>(new Map());
@@ -2774,91 +2774,46 @@ export default function MangaDiffDetector() {
       }
     };
 
-    // 全ページ抽出完了後、コンテンツベースでメモセクションを再割り当てしdiffを再計算
-    const reassignMemoSections = () => {
+    // 全ページ抽出完了後、コンテンツベースでメモセクションを再割り当てしdiffを再計算（Worker経由）
+    const reassignMemoSections = async () => {
       if (!textVerifyMemoRaw) return;
       const parsed = parseMemo(textVerifyMemoRaw);
       const sections = getUniqueMemoSections(parsed);
       if (sections.length === 0) return;
 
-      // メモセクションの正規化を事前計算（全ページ×全セクション → セクション数だけに削減）
-      const preNormalized = preNormalizeSections(sections);
+      const latestPages = textVerifyPagesRef.current;
+      const pagesToSend = latestPages
+        .map((page, idx) => ({
+          idx,
+          extractedText: page.extractedText,
+          memoText: page.memoText,
+          memoShared: page.memoShared,
+          memoSharedGroup: page.memoSharedGroup,
+          fileName: page.fileName,
+          status: page.status,
+        }))
+        .filter(p => p.status === 'done' && p.extractedText);
 
-      setTextVerifyPages(prev => {
-        if (!prev.some(p => p.status === 'done' && p.extractedText)) return prev;
+      if (pagesToSend.length === 0) return;
 
-        // Phase 1: コンテンツベースでメモセクション再割り当て
-        let anyChange = false;
-        const changedIndices = new Set<number>();
-        const reassigned = prev.map((page, idx) => {
-          if (page.status !== 'done' || !page.extractedText) return page;
-          const normPsd = normalizeTextForComparison(page.extractedText);
-          const best = findBestMemoSection(normPsd, sections, preNormalized);
-          const changed = best && best.matchRatio > 0 && best.text !== page.memoText;
-          if (changed) {
-            anyChange = true;
-            changedIndices.add(idx);
-            return {
-              ...page,
-              memoText: best.text,
-              memoShared: best.pageNums.length > 1,
-              memoSharedGroup: best.pageNums,
-              diffResult: null,
-            };
-          }
-          return page;
-        });
+      try {
+        const result = await workerReassignDiffs(pagesToSend, sections);
+        if (cancelled || result.updates.length === 0) return;
 
-        if (!anyChange) return prev;
-
-        // Phase 2: 変更があったページのdiffのみ再計算（変更なしはスキップ）
-        const groupDiffCache = new Map<string, Map<number, { psd: DiffPart[]; memo: DiffPart[] }>>();
-        const groupPageIndices = new Map<string, number[]>();
-
-        for (let i = 0; i < reassigned.length; i++) {
-          const page = reassigned[i];
-          if (page.memoShared && page.status === 'done' && page.extractedText && page.memoText) {
-            const key = page.memoSharedGroup.join(',');
-            if (!groupPageIndices.has(key)) groupPageIndices.set(key, []);
-            groupPageIndices.get(key)!.push(i);
-          }
-        }
-
-        for (const [key, indices] of groupPageIndices) {
-          // グループ内に変更があったページが含まれる場合のみ再計算
-          if (!indices.some(i => changedIndices.has(i))) continue;
-          const sorted = indices
-            .map(i => ({ idx: i, fileNum: matchPageToFile(reassigned[i].fileName) || 0 }))
-            .sort((a, b) => a.fileNum - b.fileNum);
-          const psdTexts = sorted.map(e => normalizeTextForComparison(reassigned[e.idx].extractedText, true));
-          const normMemo = normalizeTextForComparison(reassigned[indices[0]].memoText, true);
-          const diffs = computeSharedGroupDiff(psdTexts, normMemo);
-          const diffMap = new Map<number, { psd: DiffPart[]; memo: DiffPart[] }>();
-          sorted.forEach((e, i) => diffMap.set(e.idx, diffs[i]));
-          groupDiffCache.set(key, diffMap);
-        }
-
-        return reassigned.map((page, idx) => {
-          if (page.status !== 'done' || !page.extractedText) return page;
-          if (!page.memoText) return { ...page, diffResult: null };
-          // 変更のないページは既存のdiffResultをそのまま使う
-          if (!changedIndices.has(idx) && page.diffResult) return page;
-
-          if (page.memoShared) {
-            const key = page.memoSharedGroup.join(',');
-            const diffMap = groupDiffCache.get(key);
-            if (diffMap?.has(idx)) return { ...page, diffResult: diffMap.get(idx)! };
-            const normPsd = normalizeTextForComparison(page.extractedText, true);
-            const normMemo = normalizeTextForComparison(page.memoText, true);
-            const singleDiffs = computeSharedGroupDiff([normPsd], normMemo);
-            return { ...page, diffResult: singleDiffs[0] };
-          }
-
-          const normPsd = normalizeTextForComparison(page.extractedText, true);
-          const normMemo = normalizeTextForComparison(page.memoText, true);
-          return { ...page, diffResult: computeLineSetDiff(normPsd, normMemo) };
-        });
-      });
+        setTextVerifyPages(prev => prev.map((page, idx) => {
+          const update = result.updates.find(u => u.idx === idx);
+          if (!update) return page;
+          return {
+            ...page,
+            memoText: update.memoText,
+            memoShared: update.memoShared,
+            memoSharedGroup: update.memoSharedGroup,
+            diffResult: update.diffResult,
+          };
+        }));
+      } catch (err) {
+        if (!cancelled) console.error('[TextVerify] reassignMemoSections worker error:', err);
+      }
     };
 
     const processAllPages = async () => {
@@ -2878,8 +2833,8 @@ export default function MangaDiffDetector() {
       }
 
       console.log(`[TextVerify] processAllPages complete`);
-      // 全ページ抽出完了: コンテンツベースでメモ再割り当て + diff再計算
-      if (!cancelled) reassignMemoSections();
+      // 全ページ抽出完了: コンテンツベースでメモ再割り当て + diff再計算（Worker経由）
+      if (!cancelled) await reassignMemoSections();
 
       // 全ページのプレビュー画像をバックグラウンドでプリフェッチ
       // （現在ページ周辺は上のuseEffectで処理済み → 残りを順次取得してディスクキャッシュに保存）

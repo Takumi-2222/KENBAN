@@ -154,13 +154,23 @@ export function normalizeTextForComparison(text: string, preserveChunks = false)
   return result.join('\n');
 }
 
+// LCS類似度の計算上限: これを超えると文字頻度ベースの近似値を返す
+const SIMILARITY_MAX_PRODUCT = 100_000;
+
 /**
  * LCSベースの類似度スコア (0-1)
+ * 文字数の積が上限を超える場合は文字頻度ベースの近似値にフォールバック
  */
 function similarity(a: string, b: string): number {
   const m = a.length, n = b.length;
   if (m === 0 && n === 0) return 1;
   if (m === 0 || n === 0) return 0;
+
+  // 長大文字列は文字頻度ベースの近似値（O(m+n)）にフォールバック
+  if (m * n > SIMILARITY_MAX_PRODUCT) {
+    return charFreqUpperBound(a, b);
+  }
+
   let prev = new Uint16Array(n + 1);
   let curr = new Uint16Array(n + 1);
   for (let i = 1; i <= m; i++) {
@@ -173,12 +183,25 @@ function similarity(a: string, b: string): number {
   return prev[n] / Math.max(m, n);
 }
 
+// 文字レベルdiffの上限: これを超えると行全体をremoved/addedとしてマーク
+const CHAR_DIFF_MAX_PRODUCT = 50_000; // m*n の上限（例: 200文字×250文字）
+
 /**
  * 2行間の文字レベル差分を計算する (LCSバックトラック)
  * PSD側は removed、メモ側は added でマーク
+ * 文字数の積が閾値を超える場合は行全体を差分としてマーク（メモリ爆発防止）
  */
 function computeCharDiff(psdLine: string, memoLine: string): { psd: DiffPart[]; memo: DiffPart[] } {
   const m = psdLine.length, n = memoLine.length;
+
+  // サイズガード: 大きすぎる場合は行全体をdiffとしてマーク
+  if (m * n > CHAR_DIFF_MAX_PRODUCT) {
+    return {
+      psd: [{ value: psdLine, removed: true }],
+      memo: [{ value: memoLine, added: true }],
+    };
+  }
+
   const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
   for (let i = 1; i <= m; i++)
     for (let j = 1; j <= n; j++)
@@ -236,6 +259,27 @@ const FUZZY_THRESHOLD_LONG = 0.4;   // 6文字以上
 const FUZZY_THRESHOLD_SHORT = 0.2;  // 5文字以下
 
 /**
+ * 文字頻度ベースの高速類似度上限推定
+ * 共通文字の最小頻度合計 / max(m,n) で LCS 類似度の上限を O(m+n) で計算
+ * この値が閾値未満なら LCS を計算しても閾値を超えないのでスキップ可能
+ */
+function charFreqUpperBound(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (m === 0 && n === 0) return 1;
+  if (m === 0 || n === 0) return 0;
+  const freqA = new Map<string, number>();
+  for (let i = 0; i < m; i++) freqA.set(a[i], (freqA.get(a[i]) || 0) + 1);
+  const freqB = new Map<string, number>();
+  for (let i = 0; i < n; i++) freqB.set(b[i], (freqB.get(b[i]) || 0) + 1);
+  let common = 0;
+  for (const [ch, countA] of freqA) {
+    const countB = freqB.get(ch);
+    if (countB) common += Math.min(countA, countB);
+  }
+  return common / Math.max(m, n);
+}
+
+/**
  * PSD行をメモ行に貪欲マッチする共通ヘルパー
  * memoUsed: 既に消費済みのメモ行インデックス（呼び出し間で共有可能）
  */
@@ -266,8 +310,13 @@ function greedyMatch(
 
   for (const pi of unmatchedPsd) {
     let bestMj = -1, bestScore = 0;
+    const psdMinLen = psdLines[pi].length;
+    const baseThreshold = psdMinLen <= 5 ? FUZZY_THRESHOLD_SHORT : FUZZY_THRESHOLD_LONG;
     for (let j = 0; j < memoLines.length; j++) {
       if (memoUsed.has(j)) continue;
+      // 文字頻度プレフィルタ: 上限が閾値未満ならLCSスキップ
+      const upper = charFreqUpperBound(psdLines[pi], memoLines[j]);
+      if (upper < baseThreshold) continue;
       const s = similarity(psdLines[pi], memoLines[j]);
       if (s > bestScore) { bestScore = s; bestMj = j; }
     }
@@ -400,8 +449,13 @@ export function computeSharedGroupDiff(
 
     for (const pi of unmatchedPsd) {
       let bestMj = -1, bestScore = 0;
+      const psdMinLen = psdLines[pi].length;
+      const baseThreshold = psdMinLen <= 5 ? FUZZY_THRESHOLD_SHORT : FUZZY_THRESHOLD_LONG;
       for (let j = 0; j < memoLines.length; j++) {
         if (memoUsed.has(j)) continue;
+        // 文字頻度プレフィルタ
+        const upper = charFreqUpperBound(psdLines[pi], memoLines[j]);
+        if (upper < baseThreshold) continue;
         const s = similarity(psdLines[pi], memoLines[j]);
         if (s > bestScore) { bestScore = s; bestMj = j; }
       }
