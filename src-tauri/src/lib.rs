@@ -12,7 +12,7 @@ use std::panic;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::collections::{HashMap, VecDeque};
-use tauri::State;
+use tauri::{State, Manager};
 
 // ============== 画像キャッシュ ==============
 struct CachedImage {
@@ -1756,6 +1756,14 @@ pub fn run() {
             write_text_file,
             cleanup_preview_cache
         ])
+        .setup(|app| {
+            #[cfg(feature = "devtools")]
+            {
+                let window = app.get_webview_window("main").unwrap();
+                window.open_devtools();
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

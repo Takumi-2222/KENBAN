@@ -173,9 +173,19 @@ export default function MangaDiffDetector() {
   }, [initialModeSelect]);
 
   // モード変更時にリセット（CLI初期化中はスキップ）
+  const prevCompareModeRef = useRef<string | null>(null);
   useEffect(() => {
     compareModeRef.current = compareMode; // モード追跡を更新
-    if (cliInitRef.current) return; // CLI引数による初期化中はリセットしない
+    // CLI初期化中、または初回マウント時はリセットしない
+    if (cliInitRef.current) {
+      prevCompareModeRef.current = compareMode;
+      return;
+    }
+    // 前回と同じモードならリセット不要（CLI初期化完了後の再レンダーで発火するケース）
+    if (prevCompareModeRef.current === compareMode) {
+      return;
+    }
+    prevCompareModeRef.current = compareMode;
     processingRef.current = false; // 進行中の処理フラグをリセット
     setFilesA([]);
     setFilesB([]);
@@ -232,6 +242,7 @@ export default function MangaDiffDetector() {
     (async () => {
       try {
         const args: string[] = await invoke('get_cli_args');
+        console.log('[CLI] args:', args);
         const diffIdx = args.indexOf('--diff');
         if (diffIdx === -1 || diffIdx + 2 >= args.length) return;
 
@@ -250,6 +261,7 @@ export default function MangaDiffDetector() {
         const folderA = args[folderAIdx];
         const folderB = args[folderAIdx + 1];
         const selectionJsonArg = args[folderAIdx + 2]; // オプション: 選択範囲JSONパス
+        console.log('[CLI] mode:', mode, 'folderA:', folderA, 'folderB:', folderB, 'jsonArg:', selectionJsonArg);
 
         // 選択範囲JSON読み込み（psd-tiffモード用、オプション）— state設定前に読み込む
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -259,6 +271,7 @@ export default function MangaDiffDetector() {
           try {
             const jsonContent: string = await invoke('read_text_file', { path: selectionJsonArg });
             jsonData = JSON.parse(jsonContent);
+            console.log('[CLI] JSON loaded:', { filesA: jsonData.filesA?.length, filesB: jsonData.filesB?.length, bounds: jsonData.selectionRanges?.[0]?.bounds });
             if (jsonData.selectionRanges?.length === 0) {
               bounds = { left: 0, top: 0, right: -1, bottom: -1 };
             } else if (jsonData.selectionRanges?.[0]?.bounds) {
@@ -267,7 +280,7 @@ export default function MangaDiffDetector() {
               bounds = jsonData.bounds;
             }
           } catch (err) {
-            console.error('Selection JSON load error:', err);
+            console.error('[CLI] Selection JSON load error:', err);
           }
         }
 
@@ -293,8 +306,12 @@ export default function MangaDiffDetector() {
           });
         }
 
+        console.log('[CLI] filePathsA:', filePathsA.length, filePathsA.slice(0, 3));
+        console.log('[CLI] filePathsB:', filePathsB.length, filePathsB.slice(0, 3));
+
         const filesFromA = await readFilesFromPaths(filePathsA);
         const filesFromB = await readFilesFromPaths(filePathsB);
+        console.log('[CLI] filesFromA:', filesFromA.length, 'filesFromB:', filesFromB.length);
 
         // 全データ準備完了 → compareModeリセットをスキップしつつ一括設定
         cliInitRef.current = true;
@@ -310,9 +327,9 @@ export default function MangaDiffDetector() {
       } catch (err) {
         console.error('CLI diff load error:', err);
       } finally {
-        // React 18のバッチ更新後（次フレーム）にリセット — 同期的にfalseにすると
-        // compareModeのuseEffect(リセット処理)がcliInitRef=falseの状態で走ってしまう
-        setTimeout(() => { cliInitRef.current = false; }, 0);
+        // React 18の全エフェクト完了後にガードを解除
+        // prevCompareModeRefとの二重ガードにより、早めに解除されても安全
+        setTimeout(() => { cliInitRef.current = false; }, 500);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -589,11 +606,11 @@ export default function MangaDiffDetector() {
   const readFilesFromPaths = useCallback(async (paths: string[]): Promise<File[]> => {
     const mimeTypes: Record<string, string> = {
       'tif': 'image/tiff', 'tiff': 'image/tiff',
-      'psd': 'image/vnd.adobe.photoshop',
+      'psd': 'image/vnd.adobe.photoshop', 'psb': 'image/vnd.adobe.photoshop',
       'pdf': 'application/pdf',
       'json': 'application/json'
     };
-    const supportedExts = ['psd', 'tif', 'tiff', 'jpg', 'jpeg', 'pdf', 'json'];
+    const supportedExts = ['psd', 'psb', 'tif', 'tiff', 'jpg', 'jpeg', 'pdf', 'json'];
 
     // ファイルパスを収集（読み込みはまだしない）
     const filePaths: string[] = [];
@@ -641,8 +658,8 @@ export default function MangaDiffDetector() {
       const ext = dotIndex > 0 ? name.substring(dotIndex + 1).toLowerCase() : '';
 
       try {
-        // PSD/PDFファイルはRust側で処理するので、ダミーのFileを作成してパスだけ保持
-        if (ext === 'psd' || ext === 'pdf') {
+        // PSD/PSB/PDF/TIF/TIFFはRust側で処理するので、ダミーのFileを作成してパスだけ保持
+        if (ext === 'psd' || ext === 'psb' || ext === 'pdf' || ext === 'tif' || ext === 'tiff') {
           const file = new File([], name, { type: mimeTypes[ext] || 'application/octet-stream' }) as FileWithPath;
           file.filePath = filePath;
           return file;
@@ -653,6 +670,7 @@ export default function MangaDiffDetector() {
         file.filePath = filePath;
         return file;
       } catch {
+        console.error('readFilesFromPaths: failed to read file:', filePath);
         return null;
       }
     });
@@ -1181,6 +1199,7 @@ export default function MangaDiffDetector() {
 
   // ペアリング
   useEffect(() => {
+    console.log('[Pairing] filesA:', filesA.length, 'filesB:', filesB.length, 'mode:', pairingMode);
     if (filesA.length === 0 && filesB.length === 0) { setPairs([]); return; }
 
     let newPairs: FilePair[] = [];
@@ -1212,6 +1231,7 @@ export default function MangaDiffDetector() {
       });
     }
 
+    console.log('[Pairing] created pairs:', newPairs.length, newPairs.map(p => ({ nameA: p.nameA, nameB: p.nameB })));
     setPairs(newPairs);
     setDiffCache(prev => { cleanupPageCache(prev); return {}; });
     setCurrentPage(1);

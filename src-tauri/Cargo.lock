@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "kenban"
-version = "2.2.4"
+version = "2.2.5"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
