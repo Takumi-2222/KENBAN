@@ -1,4 +1,4 @@
-﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
+﻿import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { X, Square, Pen, Copy, Check, ZoomIn, ZoomOut, Maximize, Minus, Plus, Crop, Undo2, Hand, Type, MousePointer2, Download } from 'lucide-react';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
@@ -63,7 +63,7 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
   const [copied, setCopied] = useState(false);
   const [zoom, setZoom] = useState(1);
-  const [baseScale, setBaseScale] = useState(1);
+
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
   const [loadedImage, setLoadedImage] = useState<HTMLImageElement | null>(null);
@@ -115,11 +115,6 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
     img.onload = () => {
       setImageSize({ width: img.width, height: img.height });
       setLoadedImage(img);
-
-      const scaleX = MAX_DISPLAY_WIDTH / img.width;
-      const scaleY = MAX_DISPLAY_HEIGHT / img.height;
-      const fitScale = Math.min(scaleX, scaleY, 1);
-      setBaseScale(fitScale);
     };
     img.onerror = () => {
       alert('画像の読み込みに失敗しました');
@@ -130,6 +125,16 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
 
   // 現在表示する領域（クロップされている場合はクロップ領域）
   const displayRegion = cropRegion || { x: 0, y: 0, width: imageSize.width, height: imageSize.height };
+
+  // baseScaleをuseMemoで同期的に計算（useEffectだとcrop確定後に1フレーム遅延して縮みが発生する）
+  const baseScale = useMemo(() => {
+    if (displayRegion.width > 0 && displayRegion.height > 0) {
+      const scaleX = MAX_DISPLAY_WIDTH / displayRegion.width;
+      const scaleY = MAX_DISPLAY_HEIGHT / displayRegion.height;
+      return Math.min(scaleX, scaleY, 1);
+    }
+    return 1;
+  }, [displayRegion.width, displayRegion.height]);
 
   // 選択中のアノテーションを取得
   const selectedAnnotation = annotations.find(a => a.id === selectedId) || null;
@@ -789,16 +794,6 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
     return ann;
   }, [measureTextWidth]);
 
-  // クロップ時のbaseScaleを再計算
-  useEffect(() => {
-    if (displayRegion.width > 0 && displayRegion.height > 0) {
-      const scaleX = MAX_DISPLAY_WIDTH / displayRegion.width;
-      const scaleY = MAX_DISPLAY_HEIGHT / displayRegion.height;
-      const fitScale = Math.min(scaleX, scaleY, 1);
-      setBaseScale(fitScale);
-      setZoom(1);
-    }
-  }, [cropRegion, displayRegion.width, displayRegion.height]);
 
   // 現在の表示サイズ
   const displayWidth = displayRegion.width * baseScale * zoom;
@@ -1673,6 +1668,7 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
 
       if (width > 20 && height > 20) {
         setHistory([...history, { type: 'crop', region: { x: x1, y: y1, width, height } }]);
+        setZoom(1);
         // ツールは維持（連続クロップ可能）
       }
       setCurrentCropSelection(null);
@@ -1766,6 +1762,10 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
 
   const handleUndo = useCallback(() => {
     if (history.length > 0) {
+      const lastItem = history[history.length - 1];
+      if (lastItem.type === 'crop') {
+        setZoom(1);
+      }
       setHistory(history.slice(0, -1));
     }
   }, [history]);
@@ -2219,7 +2219,7 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
                 width: displayWidth,
                 height: displayHeight,
                 overflow: 'hidden',
-                transition: 'width 0.1s ease-out, height 0.1s ease-out',
+
               }}
               className="shadow-lg"
             >

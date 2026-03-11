@@ -904,21 +904,31 @@ export default function MangaDiffDetector() {
       return await appWindow.onCloseRequested(async (event) => {
         event.preventDefault();
         try {
-          if (textVerifyHasUnsavedRef.current) {
-            if (textVerifyMemoFilePathRef.current) {
-              const save = await ask('テキストメモに未保存の変更があります。保存しますか？', {
-                title: 'KENBAN', kind: 'warning', okLabel: '保存して閉じる', cancelLabel: '保存しない',
-              });
-              if (save) await saveTextVerifyMemoRef.current();
+          if (!textVerifyHasUnsavedRef.current) {
+            await appWindow.destroy();
+            return;
+          }
+          if (textVerifyMemoFilePathRef.current) {
+            // ファイルから読み込んだメモ → 保存可能
+            const save = await ask('テキストメモに未保存の変更があります。保存しますか？', {
+              title: 'KENBAN', kind: 'warning', okLabel: '保存して閉じる', cancelLabel: '保存しない',
+            });
+            if (save) await saveTextVerifyMemoRef.current();
+            await appWindow.destroy();
+          } else {
+            // クリップボード貼り付けメモ → 保存先なし、確認のみ
+            const ok = await ask('テキストメモに未保存の変更があります。閉じますか？', {
+              title: 'KENBAN', kind: 'warning', okLabel: '閉じる', cancelLabel: 'キャンセル',
+            });
+            if (!ok) {
+              event.preventDefault();
             } else {
-              const ok = await ask('テキストメモに未保存の変更があります。閉じますか？', {
-                title: 'KENBAN', kind: 'warning', okLabel: '閉じる', cancelLabel: 'キャンセル',
-              });
-              if (!ok) return;
+              await appWindow.destroy();
             }
           }
         } catch (err) {
           console.error('Close guard error (allowing close):', err);
+          await appWindow.destroy();
         }
         await appWindow.destroy();
       });
