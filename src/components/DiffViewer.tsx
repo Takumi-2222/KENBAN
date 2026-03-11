@@ -368,7 +368,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
           </div>
 
           {/* Main viewer area */}
-          <div className={`flex-1 relative overflow-hidden flex items-center justify-center bg-neutral-950 ${isFullscreen ? '' : 'p-4'} transition-colors ${!currentPair && dragOverSide ? 'bg-neutral-900' : ''}`} onDragOver={handleDragOver}>
+          <div className={`flex-1 relative ${initialModeSelect ? 'overflow-y-auto' : 'overflow-hidden'} flex items-center justify-center bg-neutral-950 ${isFullscreen ? '' : 'p-4'} transition-colors ${!currentPair && dragOverSide ? 'bg-neutral-900' : ''}`} onDragOver={handleDragOver}>
             {currentPair ? (
               currentPair.status === 'loading' || currentPair.status === 'rendering' ? (
                 <div className="flex flex-col items-center text-action"><Loader2 size={48} className="animate-spin mb-4" /><p>{currentPair.status === 'rendering' ? '画像を生成中...' : '解析中...'}</p></div>

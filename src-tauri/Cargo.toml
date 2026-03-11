@@ -1,6 +1,6 @@
 [package]
 name = "kenban"
-version = "2.2.6"
+version = "2.2.7"
 description = "KENBAN - Visual Diff Checker"
 authors = ["you"]
 edition = "2021"
