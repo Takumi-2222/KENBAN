@@ -727,7 +727,7 @@ export default function TextVerifyViewer({
               <img
                 src={currentPage.imageSrc}
                 alt={currentPage.fileName}
-                className="w-full h-full select-none"
+                className="w-full h-full object-contain select-none"
                 onLoad={e => setImgNaturalSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight, src: e.currentTarget.src })}
                 draggable={false}
               />
@@ -735,7 +735,7 @@ export default function TextVerifyViewer({
                 <svg
                   className="absolute inset-0 w-full h-full pointer-events-none"
                   viewBox={`0 0 ${currentPage.psdWidth} ${currentPage.psdHeight}`}
-                  preserveAspectRatio="none"
+                  preserveAspectRatio="xMidYMid meet"
                 >
                   {layerDiffMap.map((layer, i) => (
                     <rect

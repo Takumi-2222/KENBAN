@@ -224,7 +224,7 @@ fn parse_psd_preview(path: String, max_width: u32) -> Result<PsdImageResult, Str
 
     // リサイズ（max_width 以下にフィット、元が小さければそのまま）
     let resized = if orig_w > max_width {
-        let new_h = (orig_h as f64 * max_width as f64 / orig_w as f64) as u32;
+        let new_h = (orig_h as f64 * max_width as f64 / orig_w as f64).round() as u32;
         img.resize_exact(max_width, new_h, FilterType::Triangle)
     } else {
         img
