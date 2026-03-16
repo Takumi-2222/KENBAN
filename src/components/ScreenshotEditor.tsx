@@ -804,10 +804,10 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
     const canvas = canvasRef.current;
     if (!canvas || !loadedImage || displayRegion.width === 0) return;
 
-    // 高DPIディスプレイ対応: devicePixelRatioを考慮した解像度
+    // 高DPIディスプレイ対応: CSS表示サイズ × DPRでバッファサイズを設定
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = displayRegion.width * dpr;
-    canvas.height = displayRegion.height * dpr;
+    canvas.width = Math.round(displayWidth * dpr);
+    canvas.height = Math.round(displayHeight * dpr);
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -816,8 +816,9 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
 
-    // DPRに合わせてスケール
-    ctx.scale(dpr, dpr);
+    // 論理座標系(displayRegion)→物理バッファへのスケール
+    const totalScale = baseScale * zoom * dpr;
+    ctx.scale(totalScale, totalScale);
 
     // 透明にクリア（画像は<img>タグで表示するため）
     ctx.clearRect(0, 0, displayRegion.width, displayRegion.height);
