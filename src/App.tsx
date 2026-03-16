@@ -2921,7 +2921,7 @@ export default function MangaDiffDetector() {
     const page = textVerifyPagesRef.current[idx];
     if (!page || page.imageSrc || page.status !== 'done') return false;
     try {
-      const result = await invoke<{ file_url: string; width: number; height: number }>('parse_psd_preview', { path: page.filePath, maxWidth: 1200 });
+      const result = await invoke<{ file_url: string; width: number; height: number }>('parse_psd', { path: page.filePath });
       const assetUrl = convertFileSrc(result.file_url);
       setTextVerifyPages(prev => prev.map((p, i) =>
         i === idx ? { ...p, imageSrc: assetUrl } : p

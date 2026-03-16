@@ -163,45 +163,6 @@ fn parse_psd(path: String) -> Result<PsdImageResult, String> {
     Ok(PsdImageResult { file_url: file_path_str, width: w, height: h })
 }
 
-// PSDファイルを軽量プレビュー画像として返す（リサイズ + JPEG temp）
-// テキスト照合モード用 — フル解像度不要な場面
-#[tauri::command]
-fn parse_psd_preview(path: String, max_width: u32) -> Result<PsdImageResult, String> {
-    let cache_key = format!("psd_preview_v2:{}:{}", path, max_width);
-
-    // ディスクキャッシュチェック
-    let temp_dir = get_kenban_temp_dir()?;
-    let filename = cache_key_to_filename(&cache_key);
-    let file_path = temp_dir.join(&filename);
-    if file_path.exists() {
-        let (w, h) = image::image_dimensions(&file_path)
-            .map_err(|e| format!("Failed to read image dimensions: {}", e))?;
-        return Ok(PsdImageResult {
-            file_url: file_path.to_string_lossy().to_string(),
-            width: w,
-            height: h,
-        });
-    }
-
-    let bytes = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
-
-    let img = decode_psd_robust(&bytes)?;
-    drop(bytes);
-
-    let (orig_w, orig_h) = img.dimensions();
-
-    // リサイズ（max_width 以下にフィット、元が小さければそのまま）
-    let resized = if orig_w > max_width {
-        let new_h = (orig_h as f64 * max_width as f64 / orig_w as f64).round() as u32;
-        img.resize_exact(max_width, new_h, FilterType::Triangle)
-    } else {
-        img
-    };
-
-    let (file_path_str, w, h) = write_image_to_temp(&resized, &cache_key)?;
-    Ok(PsdImageResult { file_url: file_path_str, width: w, height: h })
-}
-
 // ファイルをシステムのデフォルトアプリで開く
 #[tauri::command]
 fn open_file_with_default_app(path: String) -> Result<(), String> {
@@ -1730,7 +1691,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             parse_psd,
-            parse_psd_preview,
             open_file_with_default_app,
             save_screenshot,
             open_folder,
