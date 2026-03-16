@@ -134,10 +134,11 @@ struct PsdImageResult {
 }
 
 // PSDファイルをパースしてtemp JPEGに書き出し、パスを返す
-// psd crateを優先し、panic時はフォールバックパーサーにフェイルオーバー
+// フォールバックパーサー（Image Data Section直接読み取り）を優先し、
+// 失敗時のみpsd crateにフォールオーバー
 #[tauri::command]
 fn parse_psd(path: String) -> Result<PsdImageResult, String> {
-    let cache_key = format!("psd:{}", path);
+    let cache_key = format!("psd_v2:{}", path);
 
     // ディスクキャッシュチェック
     let temp_dir = get_kenban_temp_dir()?;
@@ -155,24 +156,7 @@ fn parse_psd(path: String) -> Result<PsdImageResult, String> {
 
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    // まずpsd crateで試行
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let psd = Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {}", e))?;
-        let width = psd.width();
-        let height = psd.height();
-        let rgba = psd.rgba();
-
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
-            ImageBuffer::from_raw(width, height, rgba)
-                .ok_or_else(|| "Failed to create image buffer".to_string())?;
-
-        Ok::<DynamicImage, String>(DynamicImage::ImageRgba8(img))
-    }));
-
-    let img = match result {
-        Ok(Ok(img)) => img,
-        _ => decode_psd_fallback(&bytes)?,
-    };
+    let img = decode_psd_robust(&bytes)?;
     drop(bytes);
 
     let (file_path_str, w, h) = write_image_to_temp(&img, &cache_key)?;
@@ -183,7 +167,7 @@ fn parse_psd(path: String) -> Result<PsdImageResult, String> {
 // テキスト照合モード用 — フル解像度不要な場面
 #[tauri::command]
 fn parse_psd_preview(path: String, max_width: u32) -> Result<PsdImageResult, String> {
-    let cache_key = format!("psd_preview:{}:{}", path, max_width);
+    let cache_key = format!("psd_preview_v2:{}:{}", path, max_width);
 
     // ディスクキャッシュチェック
     let temp_dir = get_kenban_temp_dir()?;
@@ -201,23 +185,7 @@ fn parse_psd_preview(path: String, max_width: u32) -> Result<PsdImageResult, Str
 
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    let img = {
-        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-            let psd = Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {}", e))?;
-            let width = psd.width();
-            let height = psd.height();
-            let rgba = psd.rgba();
-            let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
-                ImageBuffer::from_raw(width, height, rgba)
-                    .ok_or_else(|| "Failed to create image buffer".to_string())?;
-            Ok::<DynamicImage, String>(DynamicImage::ImageRgba8(img_buf))
-        }));
-
-        match result {
-            Ok(Ok(img)) => img,
-            _ => decode_psd_fallback(&bytes)?,
-        }
-    };
+    let img = decode_psd_robust(&bytes)?;
     drop(bytes);
 
     let (orig_w, orig_h) = img.dimensions();
@@ -704,6 +672,52 @@ fn extract_panic_message(panic_info: &Box<dyn std::any::Any + Send>) -> String {
 
 // ============== フォールバックPSDパーサー ==============
 // psd crateがZIP圧縮等でpanicする場合に使用する軽量パーサー。
+/// psd crate出力の簡易検証（大半が黒/透明でないか）
+fn is_image_valid(img: &DynamicImage) -> bool {
+    let rgba = img.to_rgba8();
+    let pixels = rgba.as_raw();
+    let total = (rgba.width() * rgba.height()) as usize;
+    if total == 0 { return false; }
+
+    let step = (total / 500).max(1);
+    let mut non_black: usize = 0;
+    for i in (0..total).step_by(step) {
+        let idx = i * 4;
+        if idx + 2 < pixels.len() && (pixels[idx] > 0 || pixels[idx + 1] > 0 || pixels[idx + 2] > 0) {
+            non_black += 1;
+        }
+    }
+    let sampled = (total / step).max(1);
+    non_black * 100 / sampled > 3 // 3%以上が非黒なら有効
+}
+
+/// PSD解析の堅牢ラッパー: フォールバックパーサーを優先し、失敗時のみpsd crateを使用
+fn decode_psd_robust(bytes: &[u8]) -> Result<DynamicImage, String> {
+    // 1. フォールバックパーサーを優先（Image Data Sectionを直接読む — 最も信頼性が高い）
+    if let Ok(img) = decode_psd_fallback(bytes) {
+        return Ok(img);
+    }
+
+    // 2. フォールバック失敗時はpsd crateを試行
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let psd = Psd::from_bytes(bytes).map_err(|e| format!("Failed to parse PSD: {}", e))?;
+        let width = psd.width();
+        let height = psd.height();
+        let rgba = psd.rgba();
+        let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_raw(width, height, rgba)
+                .ok_or_else(|| "Failed to create image buffer".to_string())?;
+        Ok::<DynamicImage, String>(DynamicImage::ImageRgba8(img_buf))
+    }));
+
+    match result {
+        Ok(Ok(img)) if is_image_valid(&img) => Ok(img),
+        Ok(Ok(_)) => Err("PSD画像のデコード結果が不正です（画像データが破損している可能性があります）".to_string()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("PSD解析中にエラーが発生しました".to_string()),
+    }
+}
+
 // PSDの合成画像(Image Data Section)のみを読み取る。レイヤー合成は行わない。
 // RLE圧縮・非圧縮・CMYK/RGBカラーモードに対応。
 
@@ -931,29 +945,10 @@ fn decode_image_file(path: &str) -> Result<DynamicImage, String> {
 }
 
 // PSDファイルをDynamicImageとしてデコード
-// psd crateを優先し、panic時はフォールバックパーサーにフェイルオーバー
+// フォールバックパーサー（Image Data Section直読み）を優先し、失敗時のみpsd crateを使用
 fn decode_psd_to_image(path: &str) -> Result<DynamicImage, String> {
     let bytes = fs::read(path).map_err(|e| format!("Failed to read PSD: {}", e))?;
-
-    // まずpsd crateで試行（レイヤー合成等の高機能）
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let psd = Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {}", e))?;
-        let width = psd.width();
-        let height = psd.height();
-        let rgba = psd.rgba();
-        let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
-            ImageBuffer::from_raw(width, height, rgba)
-                .ok_or_else(|| "Failed to create image buffer from PSD".to_string())?;
-        Ok::<DynamicImage, String>(DynamicImage::ImageRgba8(img_buf))
-    }));
-
-    match result {
-        Ok(Ok(img)) => Ok(img),
-        _ => {
-            // psd crateが失敗/panic → フォールバックパーサーで再試行
-            decode_psd_fallback(&bytes)
-        }
-    }
+    decode_psd_robust(&bytes)
 }
 
 // DynamicImageをJPEG 85%でtempファイルに書き出し、パスを返す（高速エンコード＋IPC転送不要）
