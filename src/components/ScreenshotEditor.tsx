@@ -2235,6 +2235,7 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
                   // 画像全体を表示スケールに合わせる
                   width: imageSize.width * baseScale * zoom,
                   height: imageSize.height * baseScale * zoom,
+                  maxWidth: 'none', // Tailwind Preflightの max-width:100% を上書き（クロップ時にimgがコンテナより大きくなる）
                   // クロップ開始位置分、負の方向にずらす
                   marginLeft: -displayRegion.x * baseScale * zoom,
                   marginTop: -displayRegion.y * baseScale * zoom,
