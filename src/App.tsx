@@ -2451,7 +2451,7 @@ export default function MangaDiffDetector() {
     // キャッシュクリア
     pdfCache.clear();
     setDiffCache(prev => { cleanupPageCache(prev); return {}; });
-    invoke('clear_image_cache').catch(console.error);
+    await invoke('clear_image_cache').catch(console.error);
 
     // フォルダパスが保存されている場合、フォルダを再スキャンしてファイルを更新
     const extensionsA = getAcceptedExtensions('A').map(e => e.replace('.', ''));
@@ -2505,10 +2505,9 @@ export default function MangaDiffDetector() {
     // キャッシュクリア
     setParallelImageCache({});
     pdfCache.clear();
-    invoke('clear_image_cache').catch(console.error);
-
-    // 画像を再読み込み（キャッシュをスキップ）
-    loadParallelImages(true);
+    void invoke('clear_image_cache')
+      .then(() => loadParallelImages(true))
+      .catch(console.error);
   }, [appMode, parallelFilesA.length, parallelFilesB.length, loadParallelImages]);
 
   // MojiQ起動前のメモリ解放（重いPDFでのOut of Memoryエラー対策）

@@ -75,6 +75,22 @@ fn cache_key_to_filename(cache_key: &str) -> String {
     format!("kenban_preview_{:016x}.jpg", hash)
 }
 
+fn versioned_path_key(path: &str) -> String {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            let len = metadata.len();
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            format!("{}:{}:{}", path, len, modified)
+        }
+        Err(_) => path.to_string(),
+    }
+}
+
 /// temp ディレクトリ内の kenban_preview サブフォルダを取得（なければ作成）
 fn get_kenban_temp_dir() -> Result<PathBuf, String> {
     let temp = std::env::temp_dir().join("kenban_preview");
@@ -138,7 +154,7 @@ struct PsdImageResult {
 // 失敗時のみpsd crateにフォールオーバー
 #[tauri::command]
 fn parse_psd(path: String) -> Result<PsdImageResult, String> {
-    let cache_key = format!("psd_v2:{}", path);
+    let cache_key = format!("psd_v2:{}", versioned_path_key(&path));
 
     // ディスクキャッシュチェック
     let temp_dir = get_kenban_temp_dir()?;
@@ -396,7 +412,7 @@ fn decode_and_resize_image(
     max_width: u32,
     max_height: u32,
 ) -> Result<ImageResult, String> {
-    let cache_key = format!("{}:{}x{}", path, max_width, max_height);
+    let cache_key = format!("{}:{}x{}", versioned_path_key(&path), max_width, max_height);
 
     // 1. メモリキャッシュチェック
     {
@@ -486,7 +502,7 @@ async fn preload_images(
         let cache = state.image_cache.lock().map_err(|e| e.to_string())?;
         paths.into_iter()
             .filter(|path| {
-                let cache_key = format!("{}:{}x{}", path, max_width, max_height);
+                let cache_key = format!("{}:{}x{}", versioned_path_key(path), max_width, max_height);
                 cache.get(&cache_key).is_none()
             })
             .collect()
@@ -500,7 +516,7 @@ async fn preload_images(
     let loaded: Vec<(String, Result<(String, u32, u32, u32, u32), String>)> = paths_to_load
         .par_iter()
         .map(|path| {
-            let cache_key = format!("{}:{}x{}", path, max_width, max_height);
+            let cache_key = format!("{}:{}x{}", versioned_path_key(path), max_width, max_height);
 
             // ディスクキャッシュチェック
             if let Ok(temp_dir) = get_kenban_temp_dir() {
@@ -530,7 +546,7 @@ async fn preload_images(
     {
         let mut cache = state.image_cache.lock().map_err(|e| e.to_string())?;
         for (path, result) in loaded {
-            let cache_key = format!("{}:{}x{}", path, max_width, max_height);
+            let cache_key = format!("{}:{}x{}", versioned_path_key(&path), max_width, max_height);
             match result {
                 Ok((file_path_str, new_w, new_h, orig_w, orig_h)) => {
                     cache.insert(cache_key, CachedImage {
@@ -1356,9 +1372,13 @@ fn compute_diff_simple(
     let markers = cluster_markers(&diff_pixels, 200, 1, 300.0);
 
     // 3画像を並列エンコード → JPEG tempファイル（A/B）+ PNG tempファイル（diff）
-    let cache_a = format!("simple_a_{}", path_a);
-    let cache_b = format!("simple_b_{}", path_b);
-    let cache_d = format!("simple_d_{}_{}", path_a, path_b);
+    let cache_a = format!("simple_a_{}", versioned_path_key(&path_a));
+    let cache_b = format!("simple_b_{}", versioned_path_key(&path_b));
+    let cache_d = format!(
+        "simple_d_{}_{}",
+        versioned_path_key(&path_a),
+        versioned_path_key(&path_b)
+    );
     let (src_a_result, (src_b_result, diff_result)) = rayon::join(
         || encode_to_jpeg_temp(&img_a, &cache_a),
         || rayon::join(
@@ -1423,10 +1443,18 @@ fn compute_diff_heatmap(
     };
 
     // 4画像を並列エンコード → JPEG tempファイル（A/B/processedA）+ PNG tempファイル（diff）
-    let cache_a = format!("heatmap_a_{}", psd_path);
-    let cache_b = format!("heatmap_b_{}", tiff_path);
-    let cache_pa = format!("heatmap_pa_{}_{}", psd_path, tiff_path);
-    let cache_d = format!("heatmap_d_{}_{}", psd_path, tiff_path);
+    let cache_a = format!("heatmap_a_{}", versioned_path_key(&psd_path));
+    let cache_b = format!("heatmap_b_{}", versioned_path_key(&tiff_path));
+    let cache_pa = format!(
+        "heatmap_pa_{}_{}",
+        versioned_path_key(&psd_path),
+        versioned_path_key(&tiff_path)
+    );
+    let cache_d = format!(
+        "heatmap_d_{}_{}",
+        versioned_path_key(&psd_path),
+        versioned_path_key(&tiff_path)
+    );
     let ((src_a_result, src_b_result), (processed_a_result, diff_result)) = rayon::join(
         || rayon::join(
             || encode_to_jpeg_temp(&psd_img, &cache_a),
@@ -1651,9 +1679,14 @@ fn compute_pdf_diff(
     // 3画像を並列エンコード → JPEG tempファイル（A/B）+ PNG tempファイル（diff）
     let img_a = DynamicImage::ImageRgba8(rgba_a);
     let img_b = DynamicImage::ImageRgba8(rgba_b);
-    let cache_a = format!("pdf_a_{}_p{}", path_a, page);
-    let cache_b = format!("pdf_b_{}_p{}", path_b, page);
-    let cache_d = format!("pdf_d_{}_{}_p{}", path_a, path_b, page);
+    let cache_a = format!("pdf_a_{}_p{}", versioned_path_key(&path_a), page);
+    let cache_b = format!("pdf_b_{}_p{}", versioned_path_key(&path_b), page);
+    let cache_d = format!(
+        "pdf_d_{}_{}_p{}",
+        versioned_path_key(&path_a),
+        versioned_path_key(&path_b),
+        page
+    );
     let (src_a_result, (src_b_result, diff_result)) = rayon::join(
         || encode_to_jpeg_temp(&img_a, &cache_a),
         || rayon::join(
@@ -1703,7 +1736,7 @@ fn render_pdf_page(
         let split_img: ImageBuffer<Rgba<u8>, Vec<u8>> =
             ImageBuffer::from_raw(half_width, height, split_buf)
                 .ok_or_else(|| "Failed to create split image buffer".to_string())?;
-        let cache_key = format!("pdfpage_{}_p{}_{}", path, page, side);
+        let cache_key = format!("pdfpage_{}_p{}_{}", versioned_path_key(&path), page, side);
         let src = encode_to_jpeg_temp(&DynamicImage::ImageRgba8(split_img), &cache_key)?;
         return Ok(PdfPageImage { src, width: half_width, height });
     }
@@ -1711,7 +1744,7 @@ fn render_pdf_page(
     let full_img: ImageBuffer<Rgba<u8>, Vec<u8>> =
         ImageBuffer::from_raw(width, height, samples)
             .ok_or_else(|| "Failed to create image buffer".to_string())?;
-    let cache_key = format!("pdfpage_{}_p{}", path, page);
+    let cache_key = format!("pdfpage_{}_p{}", versioned_path_key(&path), page);
     let src = encode_to_jpeg_temp(&DynamicImage::ImageRgba8(full_img), &cache_key)?;
     Ok(PdfPageImage { src, width, height })
 }
