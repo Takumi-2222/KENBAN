@@ -24,6 +24,7 @@ import type { CompareMode, AppMode, FileWithPath, CropBounds, DiffMarker, DiffPa
 
 // ============== 差分検出アプリ ==============
 export default function MangaDiffDetector() {
+  const [photoshopPath, setPhotoshopPath] = useState<string | null>(null);
   const [compareMode, setCompareMode] = useState<CompareMode>('tiff-tiff');
   const [initialModeSelect, setInitialModeSelect] = useState(true);
   const [filesA, setFilesA] = useState<File[]>([]);
@@ -78,6 +79,44 @@ export default function MangaDiffDetector() {
   const [showPsSelectPopup, setShowPsSelectPopup] = useState(false); // Photoshop選択ポップアップ
   const [showMojiQSelectPopup, setShowMojiQSelectPopup] = useState(false); // MojiQ選択ポップアップ（並列ビューワー用）
   const [showFolderSelectPopup, setShowFolderSelectPopup] = useState(false); // フォルダ選択ポップアップ（並列ビューワー用）
+
+  useEffect(() => {
+    const savedPath = window.localStorage.getItem('photoshopExecutablePath');
+    if (savedPath) {
+      setPhotoshopPath(savedPath);
+    }
+  }, []);
+
+  const openInPhotoshop = useCallback(async (path: string) => {
+    try {
+      await invoke('open_file_in_photoshop', { path, photoshopPath });
+    } catch (err) {
+      const message = typeof err === 'string' ? err : 'Photoshopの起動に失敗しました。';
+      console.error('Failed to open in Photoshop:', err);
+      window.alert(message);
+    }
+  }, [photoshopPath]);
+
+  const handleSelectPhotoshopExecutable = useCallback(async () => {
+    try {
+      const selected = await open({
+        title: 'Photoshop.exe を選択',
+        multiple: false,
+        filters: [{ name: 'Photoshop', extensions: ['exe'] }],
+      });
+      if (!selected || typeof selected !== 'string') return;
+
+      setPhotoshopPath(selected);
+      window.localStorage.setItem('photoshopExecutablePath', selected);
+    } catch (err) {
+      console.error('Failed to select Photoshop executable:', err);
+    }
+  }, []);
+
+  const handleClearPhotoshopExecutable = useCallback(() => {
+    setPhotoshopPath(null);
+    window.localStorage.removeItem('photoshopExecutablePath');
+  }, []);
   const [spreadSplitModeA, setSpreadSplitModeA] = useState(false); // 見開き分割モード（A側）
   const [spreadSplitModeB, setSpreadSplitModeB] = useState(false); // 見開き分割モード（B側）
   const [firstPageSingleA, setFirstPageSingleA] = useState(true); // 1ページ目を単ページ扱い（A側）
@@ -3240,7 +3279,7 @@ export default function MangaDiffDetector() {
           const currentPage = textVerifyPages[textVerifyCurrentIndex];
           if (currentPage?.filePath) {
             e.preventDefault();
-            invoke('open_file_with_default_app', { path: currentPage.filePath });
+            openInPhotoshop(currentPage.filePath);
           }
           return;
         }
@@ -3388,7 +3427,7 @@ export default function MangaDiffDetector() {
             // 非同期モード: アクティブパネル側を直接開く
             const file = parallelActivePanel === 'A' ? fileA : fileB;
             if (file?.type === 'psd') {
-              invoke('open_file_with_default_app', { path: file.path });
+              openInPhotoshop(file.path);
             }
           } else {
             // 同期モード: ポップアップ表示
@@ -3492,7 +3531,7 @@ export default function MangaDiffDetector() {
         }
         if (psdFile?.filePath && psdFile.name.toLowerCase().endsWith('.psd')) {
           e.preventDefault();
-          invoke('open_file_with_default_app', { path: psdFile.filePath });
+          openInPhotoshop(psdFile.filePath);
         }
       }
       // Qキー: PDF-PDFモードでMojiQで開く
@@ -3771,6 +3810,9 @@ export default function MangaDiffDetector() {
           setShowMarkers={setShowMarkers}
           settingsOpen={settingsOpen}
           setSettingsOpen={setSettingsOpen}
+          photoshopPath={photoshopPath}
+          handleSelectPhotoshopExecutable={handleSelectPhotoshopExecutable}
+          handleClearPhotoshopExecutable={handleClearPhotoshopExecutable}
           currentPage={currentPage}
           setCurrentPage={setCurrentPage}
           handleModeChange={handleModeChange}
@@ -3835,6 +3877,7 @@ export default function MangaDiffDetector() {
             onUndo={undoTextVerifyMemo}
             stats={textVerifyStats}
             diffPageIndices={textVerifyDiffPageIndices}
+            openInPhotoshop={openInPhotoshop}
           />
         ) : appMode === 'diff-check' ? (
           <DiffViewer
@@ -3891,6 +3934,7 @@ export default function MangaDiffDetector() {
             handleDragEnter={handleDragEnter}
             releaseMemoryBeforeMojiQ={releaseMemoryBeforeMojiQ}
             setDragOverSide={setDragOverSide}
+            openInPhotoshop={openInPhotoshop}
             dropZoneARef={dropZoneARef}
             dropZoneBRef={dropZoneBRef}
             dropZoneJsonRef={dropZoneJsonRef}
@@ -3967,6 +4011,7 @@ export default function MangaDiffDetector() {
             releaseMemoryBeforeMojiQ={releaseMemoryBeforeMojiQ}
             expandPdfToParallelEntries={expandPdfToParallelEntries}
             refreshParallelView={refreshParallelView}
+            openInPhotoshop={openInPhotoshop}
             showHelp={showHelp}
             setShowHelp={setShowHelp}
             parallelDropZoneARef={parallelDropZoneARef}

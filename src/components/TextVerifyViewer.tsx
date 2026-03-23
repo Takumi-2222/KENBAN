@@ -6,7 +6,6 @@ import {
   ArrowUp, ArrowDown, SplitSquareVertical, Merge,
   Eye, EyeOff, Pencil, PencilOff, Save, Undo2,
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
 import { normalizeTextForComparison, buildUnifiedDiff, CHUNK_BREAK, getMemoTextFromEntry, getPsdTextFromEntry, reconstructMemoFromEntries } from '../utils/textExtract';
 import type { UnifiedDiffEntry } from '../utils/textExtract';
 import type { TextVerifyPage, DiffPart, ExtractedTextLayer } from '../types';
@@ -31,6 +30,7 @@ interface TextVerifyViewerProps {
   onUndo: () => void;
   stats: { matched: number; mismatched: number; pending: number; total: number };
   diffPageIndices: number[];
+  openInPhotoshop: (path: string) => void;
 }
 
 export default function TextVerifyViewer({
@@ -53,6 +53,7 @@ export default function TextVerifyViewer({
   onUndo,
   stats,
   diffPageIndices,
+  openInPhotoshop: launchInPhotoshop,
 }: TextVerifyViewerProps) {
   const [zoom, setZoom] = useState(1);
   const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
@@ -184,9 +185,9 @@ export default function TextVerifyViewer({
   // Photoshopで開く
   const openInPhotoshop = useCallback(() => {
     if (currentPage?.filePath) {
-      invoke('open_file_with_default_app', { path: currentPage.filePath });
+      launchInPhotoshop(currentPage.filePath);
     }
-  }, [currentPage?.filePath]);
+  }, [currentPage?.filePath, launchInPhotoshop]);
 
   // 統合ビュー用データ
   const unifiedEntries = useMemo((): UnifiedDiffEntry[] => {

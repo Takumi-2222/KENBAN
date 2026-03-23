@@ -9,7 +9,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::panic;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::collections::{HashMap, VecDeque};
 use tauri::{State, Manager};
@@ -167,6 +167,79 @@ fn parse_psd(path: String) -> Result<PsdImageResult, String> {
 #[tauri::command]
 fn open_file_with_default_app(path: String) -> Result<(), String> {
     open::that(&path).map_err(|e| format!("Failed to open file: {}", e))
+}
+
+fn find_photoshop_path() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    let add_adobe_candidates = |base: &Path, out: &mut Vec<PathBuf>| {
+        let adobe_dir = base.join("Adobe");
+        if let Ok(entries) = std::fs::read_dir(&adobe_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if name.contains("photoshop") {
+                    out.push(path.join("Photoshop.exe"));
+                }
+            }
+        }
+    };
+
+    if let Ok(program_files) = std::env::var("ProgramFiles") {
+        add_adobe_candidates(Path::new(&program_files), &mut candidates);
+    }
+
+    if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+        add_adobe_candidates(Path::new(&program_files_x86), &mut candidates);
+    }
+
+    if let Some(local_app_data) = dirs::data_local_dir() {
+        candidates.push(
+            local_app_data
+                .join("Programs")
+                .join("Adobe")
+                .join("Adobe Photoshop")
+                .join("Photoshop.exe"),
+        );
+    }
+
+    for path in candidates {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+#[tauri::command]
+fn open_file_in_photoshop(path: String, photoshop_path: Option<String>) -> Result<(), String> {
+    let photoshop_path = photoshop_path
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(find_photoshop_path)
+        .ok_or_else(|| {
+            "Photoshop.exe が見つかりません。設定から Photoshop.exe を選択してください。"
+                .to_string()
+        })?;
+
+    if !photoshop_path.exists() {
+        return Err(format!(
+            "指定された Photoshop.exe が存在しません: {}",
+            photoshop_path.display()
+        ));
+    }
+
+    std::process::Command::new(&photoshop_path)
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("Failed to launch Photoshop: {}", e))?;
+
+    Ok(())
 }
 
 // スクリーンショット保存結果
@@ -1692,6 +1765,7 @@ pub fn run() {
             greet,
             parse_psd,
             open_file_with_default_app,
+            open_file_in_photoshop,
             save_screenshot,
             open_folder,
             decode_and_resize_image,
@@ -1711,10 +1785,10 @@ pub fn run() {
             write_text_file,
             cleanup_preview_cache
         ])
-        .setup(|app| {
+        .setup(|_app| {
             #[cfg(feature = "devtools")]
             {
-                let window = app.get_webview_window("main").unwrap();
+                let window = _app.get_webview_window("main").unwrap();
                 window.open_devtools();
             }
             Ok(())

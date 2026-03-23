@@ -38,6 +38,9 @@ interface SidebarProps {
   setShowMarkers: (v: boolean) => void;
   settingsOpen: boolean;
   setSettingsOpen: (v: boolean) => void;
+  photoshopPath: string | null;
+  handleSelectPhotoshopExecutable: () => void;
+  handleClearPhotoshopExecutable: () => void;
   currentPage: number;
   setCurrentPage: (v: number) => void;
   handleModeChange: (mode: CompareMode) => void;
@@ -116,6 +119,9 @@ export default function Sidebar({
   setShowMarkers,
   settingsOpen,
   setSettingsOpen,
+  photoshopPath,
+  handleSelectPhotoshopExecutable,
+  handleClearPhotoshopExecutable,
   currentPage,
   setCurrentPage,
   handleModeChange,
@@ -397,6 +403,22 @@ export default function Sidebar({
 
             {settingsOpen && (
               <div className="px-3 pb-3 space-y-2">
+                <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2 space-y-2">
+                  <div className="text-[11px] text-neutral-500">Photoshop実行ファイル</div>
+                  <div className="text-[11px] break-all text-neutral-300">
+                    {photoshopPath || '未設定: 既定のインストール先を自動探索します'}
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={handleSelectPhotoshopExecutable} className="flex-1 py-1 bg-[rgba(164,140,196,0.15)] hover:bg-[rgba(164,140,196,0.25)] text-purple-300 rounded-md text-xs transition-colors">
+                      Photoshop.exe を選択
+                    </button>
+                    {photoshopPath && (
+                      <button onClick={handleClearPhotoshopExecutable} className="px-2 py-1 bg-white/[0.06] hover:bg-white/[0.1] text-neutral-300 rounded-md text-xs transition-colors">
+                        解除
+                      </button>
+                    )}
+                  </div>
+                </div>
                 <div className="flex gap-1 bg-neutral-950 rounded-lg p-0.5">
                   <button onClick={() => setPairingMode('order')} className={`flex-1 text-xs py-1 rounded-md transition-all ${pairingMode === 'order' ? 'bg-neutral-700 text-neutral-100 shadow-sm' : 'text-neutral-500 hover:text-neutral-300'}`}>順番でペア</button>
                   <button onClick={() => setPairingMode('name')} className={`flex-1 text-xs py-1 rounded-md transition-all ${pairingMode === 'name' ? 'bg-neutral-700 text-neutral-100 shadow-sm' : 'text-neutral-500 hover:text-neutral-300'}`}>名前でペア</button>

@@ -85,6 +85,7 @@ interface ParallelViewerProps {
   releaseMemoryBeforeMojiQ: () => void;
   expandPdfToParallelEntries: (pdfPath: string, side: 'A' | 'B', droppedFile?: File, forceSplitMode?: boolean) => void;
   refreshParallelView: () => void;
+  openInPhotoshop: (path: string) => void;
   showHelp: boolean;
   setShowHelp: (v: boolean) => void;
   parallelDropZoneARef: React.RefObject<HTMLDivElement | null>;
@@ -158,9 +159,10 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
     parallelPdfImageB,
     parallelMaxIndex: _parallelMaxIndex,
     releaseMemoryBeforeMojiQ,
-    expandPdfToParallelEntries,
-    refreshParallelView,
-    showHelp,
+  expandPdfToParallelEntries,
+  refreshParallelView,
+  openInPhotoshop,
+  showHelp,
     setShowHelp,
     parallelDropZoneARef,
     parallelDropZoneBRef,
@@ -320,7 +322,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           // 非同期モード: アクティブパネル側を直接開く
                           const file = parallelActivePanel === 'A' ? currentFileA : currentFileB;
                           if (file?.type === 'psd') {
-                            invoke('open_file_with_default_app', { path: file.path });
+                            openInPhotoshop(file.path);
                           }
                         } else {
                           setShowPsSelectPopup(!showPsSelectPopup);
@@ -340,7 +342,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                         <div className="absolute top-full right-0 mt-2 p-2 bg-neutral-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] z-50 min-w-48">
                           <button
                             onClick={() => {
-                              if (currentFileA?.path) invoke('open_file_with_default_app', { path: currentFileA.path });
+                            if (currentFileA?.path) openInPhotoshop(currentFileA.path);
                               setShowPsSelectPopup(false);
                             }}
                             disabled={!hasPsdA}
@@ -351,7 +353,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           </button>
                           <button
                             onClick={() => {
-                              if (currentFileB?.path) invoke('open_file_with_default_app', { path: currentFileB.path });
+                            if (currentFileB?.path) openInPhotoshop(currentFileB.path);
                               setShowPsSelectPopup(false);
                             }}
                             disabled={!hasPsdB}

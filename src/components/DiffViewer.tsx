@@ -69,6 +69,7 @@ interface DiffViewerProps {
   diffNavPosition: { current: number; total: number };
   goNextDiffFile: () => void;
   goPrevDiffFile: () => void;
+  openInPhotoshop: (path: string) => void;
 }
 
 // モードラベル
@@ -148,6 +149,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
     diffNavPosition,
     goNextDiffFile,
     goPrevDiffFile,
+    openInPhotoshop,
   } = props;
 
   const [showFolderSelectPopup, setShowFolderSelectPopup] = useState(false);
@@ -193,7 +195,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                       : (viewMode === 'B' && compareMode === 'psd-psd')
                         ? currentPair?.fileB as FileWithPath | null
                         : null;
-                    if (psdFile?.filePath) invoke('open_file_with_default_app', { path: psdFile.filePath });
+                    if (psdFile?.filePath) openInPhotoshop(psdFile.filePath);
                   }}
                   disabled={!currentPair || currentPair.status !== 'done' || viewMode === 'diff' || (viewMode === 'B' && compareMode === 'psd-tiff')}
                   className="px-2.5 py-1.5 text-xs rounded-md bg-[rgba(164,140,196,0.15)] hover:bg-[rgba(164,140,196,0.25)] text-purple-400 border border-[rgba(164,140,196,0.2)] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 transition-colors"
