@@ -1,22 +1,27 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
-use image::{ImageBuffer, Rgba, DynamicImage, GenericImageView};
 use image::imageops::FilterType;
+use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
 use psd::Psd;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::collections::{HashMap, VecDeque};
-use tauri::{State, Manager};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{Manager, State};
+
+const JSON_FOLDER_BASE_PATH: &str = r"G:\共有ドライブ\CLLENN\編集部フォルダ\編集企画部\編集企画_C班(AT業務推進)\DTP制作部\JSONフォルダ";
+const JSON_ACCESS_LOG_BASE_PATH: &str =
+    r"G:\共有ドライブ\CLLENN\編集部フォルダ\編集企画部\編集企画_C班(AT業務推進)\DTP制作部\JSON_Log";
 
 // ============== 画像キャッシュ ==============
 struct CachedImage {
-    file_path: String,  // temp JPEG ファイルパス
+    file_path: String, // temp JPEG ファイルパス
     width: u32,
     height: u32,
     original_width: u32,
@@ -95,8 +100,7 @@ fn versioned_path_key(path: &str) -> String {
 fn get_kenban_temp_dir() -> Result<PathBuf, String> {
     let temp = std::env::temp_dir().join("kenban_preview");
     if !temp.exists() {
-        fs::create_dir_all(&temp)
-            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+        fs::create_dir_all(&temp).map_err(|e| format!("Failed to create temp dir: {}", e))?;
     }
     Ok(temp)
 }
@@ -118,15 +122,15 @@ fn write_image_to_temp(img: &DynamicImage, cache_key: &str) -> Result<(String, u
     // RGBA → RGB 変換して JPEG エンコード
     let rgb_img = DynamicImage::ImageRgb8(img.to_rgb8());
     let mut jpeg_data = Cursor::new(Vec::new());
-    rgb_img.write_to(&mut jpeg_data, image::ImageFormat::Jpeg)
+    rgb_img
+        .write_to(&mut jpeg_data, image::ImageFormat::Jpeg)
         .map_err(|e| format!("Failed to encode JPEG: {}", e))?;
 
     // アトミック書き込み（一時ファイル→リネーム）
     let tmp_path = temp_dir.join(format!("{}.tmp", filename));
     fs::write(&tmp_path, jpeg_data.get_ref())
         .map_err(|e| format!("Failed to write temp file: {}", e))?;
-    fs::rename(&tmp_path, &file_path)
-        .map_err(|e| format!("Failed to rename temp file: {}", e))?;
+    fs::rename(&tmp_path, &file_path).map_err(|e| format!("Failed to rename temp file: {}", e))?;
 
     Ok((file_path.to_string_lossy().to_string(), w, h))
 }
@@ -134,7 +138,7 @@ fn write_image_to_temp(img: &DynamicImage, cache_key: &str) -> Result<(String, u
 // ============== 画像処理結果 ==============
 #[derive(Serialize)]
 struct ImageResult {
-    file_url: String,  // temp JPEG ファイルパス（フロントでasset://に変換）
+    file_url: String, // temp JPEG ファイルパス（フロントでasset://に変換）
     width: u32,
     height: u32,
     original_width: u32,
@@ -144,7 +148,7 @@ struct ImageResult {
 // PSD解析結果
 #[derive(Serialize)]
 struct PsdImageResult {
-    file_url: String,  // temp JPEG ファイルパス
+    file_url: String, // temp JPEG ファイルパス
     width: u32,
     height: u32,
 }
@@ -176,7 +180,11 @@ fn parse_psd(path: String) -> Result<PsdImageResult, String> {
     drop(bytes);
 
     let (file_path_str, w, h) = write_image_to_temp(&img, &cache_key)?;
-    Ok(PsdImageResult { file_url: file_path_str, width: w, height: h })
+    Ok(PsdImageResult {
+        file_url: file_path_str,
+        width: w,
+        height: h,
+    })
 }
 
 // ファイルをシステムのデフォルトアプリで開く
@@ -269,13 +277,11 @@ struct SaveScreenshotResult {
 #[tauri::command]
 fn save_screenshot(image_data: String, file_name: String) -> Result<SaveScreenshotResult, String> {
     // デスクトップパスを取得
-    let desktop = dirs::desktop_dir()
-        .ok_or_else(|| "Failed to get desktop path".to_string())?;
+    let desktop = dirs::desktop_dir().ok_or_else(|| "Failed to get desktop path".to_string())?;
 
     // 保存先フォルダを作成
     let folder_path = desktop.join("Script_Output").join("検版ツール");
-    fs::create_dir_all(&folder_path)
-        .map_err(|e| format!("Failed to create folder: {}", e))?;
+    fs::create_dir_all(&folder_path).map_err(|e| format!("Failed to create folder: {}", e))?;
 
     // ファイル名を生成（拡張子を.pngに変更）
     let base_name = PathBuf::from(&file_name)
@@ -295,12 +301,12 @@ fn save_screenshot(image_data: String, file_name: String) -> Result<SaveScreensh
     let base64_data = image_data
         .strip_prefix("data:image/png;base64,")
         .unwrap_or(&image_data);
-    let image_bytes = STANDARD.decode(base64_data)
+    let image_bytes = STANDARD
+        .decode(base64_data)
         .map_err(|e| format!("Failed to decode base64: {}", e))?;
 
     // ファイルに保存
-    fs::write(&file_path, image_bytes)
-        .map_err(|e| format!("Failed to write file: {}", e))?;
+    fs::write(&file_path, image_bytes).map_err(|e| format!("Failed to write file: {}", e))?;
 
     Ok(SaveScreenshotResult {
         file_path: file_path.to_string_lossy().to_string(),
@@ -320,30 +326,61 @@ fn find_mojiq_path() -> Option<PathBuf> {
 
     // 1. Program Files
     if let Ok(program_files) = std::env::var("ProgramFiles") {
-        candidates.push(PathBuf::from(&program_files).join("MojiQ").join("MojiQ.exe"));
+        candidates.push(
+            PathBuf::from(&program_files)
+                .join("MojiQ")
+                .join("MojiQ.exe"),
+        );
     }
 
     // 2. Program Files (x86)
     if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
-        candidates.push(PathBuf::from(&program_files_x86).join("MojiQ").join("MojiQ.exe"));
+        candidates.push(
+            PathBuf::from(&program_files_x86)
+                .join("MojiQ")
+                .join("MojiQ.exe"),
+        );
     }
 
     // 3. ユーザーのLocalAppData\Programs（Electronのデフォルト）
     if let Some(local_app_data) = dirs::data_local_dir() {
-        candidates.push(local_app_data.join("Programs").join("MojiQ").join("MojiQ.exe"));
-        candidates.push(local_app_data.join("Programs").join("mojiq").join("MojiQ.exe"));
+        candidates.push(
+            local_app_data
+                .join("Programs")
+                .join("MojiQ")
+                .join("MojiQ.exe"),
+        );
+        candidates.push(
+            local_app_data
+                .join("Programs")
+                .join("mojiq")
+                .join("MojiQ.exe"),
+        );
     }
 
     // 4. デスクトップ > MojiQ（開発用）
     if let Some(desktop) = dirs::desktop_dir() {
-        candidates.push(desktop.join("MojiQ").join("dist").join("win-unpacked").join("MojiQ.exe"));
+        candidates.push(
+            desktop
+                .join("MojiQ")
+                .join("dist")
+                .join("win-unpacked")
+                .join("MojiQ.exe"),
+        );
         // バージョン付きフォルダ（ver_X.XX\MojiQ）もスキャン
         if let Ok(entries) = std::fs::read_dir(&desktop) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
                 if name_str.starts_with("ver_") {
-                    candidates.push(entry.path().join("MojiQ").join("dist").join("win-unpacked").join("MojiQ.exe"));
+                    candidates.push(
+                        entry
+                            .path()
+                            .join("MojiQ")
+                            .join("dist")
+                            .join("win-unpacked")
+                            .join("MojiQ.exe"),
+                    );
                 }
             }
         }
@@ -362,11 +399,15 @@ fn find_mojiq_path() -> Option<PathBuf> {
 // MojiQでPDFを開く（ページ指定付き）
 #[tauri::command]
 fn open_pdf_in_mojiq(pdf_path: String, page: Option<u32>) -> Result<(), String> {
-    println!("[MojiQ] open_pdf_in_mojiq called: pdf_path={}, page={:?}", pdf_path, page);
+    println!(
+        "[MojiQ] open_pdf_in_mojiq called: pdf_path={}, page={:?}",
+        pdf_path, page
+    );
 
     // MojiQ.exeのパスを探す
-    let mojiq_path = find_mojiq_path()
-        .ok_or_else(|| "MojiQ.exe が見つかりません。MojiQをインストールしてください。".to_string())?;
+    let mojiq_path = find_mojiq_path().ok_or_else(|| {
+        "MojiQ.exe が見つかりません。MojiQをインストールしてください。".to_string()
+    })?;
 
     println!("[MojiQ] Found MojiQ at: {:?}", mojiq_path);
 
@@ -378,7 +419,8 @@ fn open_pdf_in_mojiq(pdf_path: String, page: Option<u32>) -> Result<(), String> 
     }
     cmd.arg(&pdf_path);
 
-    cmd.spawn().map_err(|e| format!("Failed to launch MojiQ: {}", e))?;
+    cmd.spawn()
+        .map_err(|e| format!("Failed to launch MojiQ: {}", e))?;
 
     Ok(())
 }
@@ -386,7 +428,12 @@ fn open_pdf_in_mojiq(pdf_path: String, page: Option<u32>) -> Result<(), String> 
 // ============== 並列ビューモード用の高速画像処理 ==============
 
 // 画像をリサイズして temp JPEG に書き出し、パスを返す（内部ヘルパー）
-fn resize_and_write_to_temp(img: &DynamicImage, max_width: u32, max_height: u32, cache_key: &str) -> Result<(String, u32, u32), String> {
+fn resize_and_write_to_temp(
+    img: &DynamicImage,
+    max_width: u32,
+    max_height: u32,
+    cache_key: &str,
+) -> Result<(String, u32, u32), String> {
     let (orig_w, orig_h) = img.dimensions();
 
     // アスペクト比を保ちながらリサイズ
@@ -444,17 +491,19 @@ fn decode_and_resize_image(
         let file_path_str = file_path.to_string_lossy().to_string();
 
         // 元画像サイズも取得
-        let (orig_w, orig_h) = image::image_dimensions(&path)
-            .unwrap_or((w, h));
+        let (orig_w, orig_h) = image::image_dimensions(&path).unwrap_or((w, h));
 
         let mut cache = state.image_cache.lock().map_err(|e| e.to_string())?;
-        cache.insert(cache_key.clone(), CachedImage {
-            file_path: file_path_str.clone(),
-            width: w,
-            height: h,
-            original_width: orig_w,
-            original_height: orig_h,
-        });
+        cache.insert(
+            cache_key.clone(),
+            CachedImage {
+                file_path: file_path_str.clone(),
+                width: w,
+                height: h,
+                original_width: orig_w,
+                original_height: orig_h,
+            },
+        );
         return Ok(ImageResult {
             file_url: file_path_str,
             width: w,
@@ -465,20 +514,23 @@ fn decode_and_resize_image(
     }
 
     // 3. フルデコード → temp書き出し → キャッシュ登録
-    let img = image::open(&path)
-        .map_err(|e| format!("Failed to open image: {}", e))?;
+    let img = image::open(&path).map_err(|e| format!("Failed to open image: {}", e))?;
     let (orig_w, orig_h) = img.dimensions();
 
-    let (file_path_str, new_w, new_h) = resize_and_write_to_temp(&img, max_width, max_height, &cache_key)?;
+    let (file_path_str, new_w, new_h) =
+        resize_and_write_to_temp(&img, max_width, max_height, &cache_key)?;
 
     let mut cache = state.image_cache.lock().map_err(|e| e.to_string())?;
-    cache.insert(cache_key, CachedImage {
-        file_path: file_path_str.clone(),
-        width: new_w,
-        height: new_h,
-        original_width: orig_w,
-        original_height: orig_h,
-    });
+    cache.insert(
+        cache_key,
+        CachedImage {
+            file_path: file_path_str.clone(),
+            width: new_w,
+            height: new_h,
+            original_width: orig_w,
+            original_height: orig_h,
+        },
+    );
 
     Ok(ImageResult {
         file_url: file_path_str,
@@ -500,9 +552,11 @@ async fn preload_images(
     // 既にメモリキャッシュにあるパスを除外
     let paths_to_load: Vec<String> = {
         let cache = state.image_cache.lock().map_err(|e| e.to_string())?;
-        paths.into_iter()
+        paths
+            .into_iter()
             .filter(|path| {
-                let cache_key = format!("{}:{}x{}", versioned_path_key(path), max_width, max_height);
+                let cache_key =
+                    format!("{}:{}x{}", versioned_path_key(path), max_width, max_height);
                 cache.get(&cache_key).is_none()
             })
             .collect()
@@ -524,8 +578,18 @@ async fn preload_images(
                 let file_path = temp_dir.join(&filename);
                 if file_path.exists() {
                     if let Ok((w, h)) = image::image_dimensions(&file_path) {
-                        let (orig_w, orig_h) = image::image_dimensions(path.as_str()).unwrap_or((w, h));
-                        return (path.clone(), Ok((file_path.to_string_lossy().to_string(), w, h, orig_w, orig_h)));
+                        let (orig_w, orig_h) =
+                            image::image_dimensions(path.as_str()).unwrap_or((w, h));
+                        return (
+                            path.clone(),
+                            Ok((
+                                file_path.to_string_lossy().to_string(),
+                                w,
+                                h,
+                                orig_w,
+                                orig_h,
+                            )),
+                        );
                     }
                 }
             }
@@ -534,7 +598,8 @@ async fn preload_images(
                 .map_err(|e| format!("open error: {}", e))
                 .and_then(|img| {
                     let (orig_w, orig_h) = img.dimensions();
-                    let (file_path_str, new_w, new_h) = resize_and_write_to_temp(&img, max_width, max_height, &cache_key)?;
+                    let (file_path_str, new_w, new_h) =
+                        resize_and_write_to_temp(&img, max_width, max_height, &cache_key)?;
                     Ok((file_path_str, new_w, new_h, orig_w, orig_h))
                 });
             (path.clone(), result)
@@ -549,13 +614,16 @@ async fn preload_images(
             let cache_key = format!("{}:{}x{}", versioned_path_key(&path), max_width, max_height);
             match result {
                 Ok((file_path_str, new_w, new_h, orig_w, orig_h)) => {
-                    cache.insert(cache_key, CachedImage {
-                        file_path: file_path_str,
-                        width: new_w,
-                        height: new_h,
-                        original_width: orig_w,
-                        original_height: orig_h,
-                    });
+                    cache.insert(
+                        cache_key,
+                        CachedImage {
+                            file_path: file_path_str,
+                            width: new_w,
+                            height: new_h,
+                            original_width: orig_w,
+                            original_height: orig_h,
+                        },
+                    );
                     results.push(format!("loaded:{}", path));
                 }
                 Err(e) => results.push(format!("error:{}:{}", path, e)),
@@ -608,15 +676,15 @@ fn cleanup_preview_cache() -> Result<u32, String> {
 // フォルダ内のファイル一覧を取得
 #[tauri::command]
 fn list_files_in_folder(path: String, extensions: Vec<String>) -> Result<Vec<String>, String> {
-    let dir = std::fs::read_dir(&path)
-        .map_err(|e| format!("Failed to read directory: {}", e))?;
+    let dir = std::fs::read_dir(&path).map_err(|e| format!("Failed to read directory: {}", e))?;
 
     let mut files: Vec<String> = dir
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let path = entry.path();
             if path.is_file() {
-                let ext = path.extension()
+                let ext = path
+                    .extension()
                     .and_then(|e| e.to_str())
                     .map(|e| e.to_lowercase())
                     .unwrap_or_default();
@@ -630,11 +698,13 @@ fn list_files_in_folder(path: String, extensions: Vec<String>) -> Result<Vec<Str
 
     // 自然順ソート（ファイル名でソート）
     files.sort_by(|a, b| {
-        let name_a = PathBuf::from(a).file_name()
+        let name_a = PathBuf::from(a)
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_lowercase();
-        let name_b = PathBuf::from(b).file_name()
+        let name_b = PathBuf::from(b)
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_lowercase();
@@ -727,13 +797,16 @@ fn is_image_valid(img: &DynamicImage) -> bool {
     let rgba = img.to_rgba8();
     let pixels = rgba.as_raw();
     let total = (rgba.width() * rgba.height()) as usize;
-    if total == 0 { return false; }
+    if total == 0 {
+        return false;
+    }
 
     let step = (total / 500).max(1);
     let mut non_black: usize = 0;
     for i in (0..total).step_by(step) {
         let idx = i * 4;
-        if idx + 2 < pixels.len() && (pixels[idx] > 0 || pixels[idx + 1] > 0 || pixels[idx + 2] > 0) {
+        if idx + 2 < pixels.len() && (pixels[idx] > 0 || pixels[idx + 1] > 0 || pixels[idx + 2] > 0)
+        {
             non_black += 1;
         }
     }
@@ -754,15 +827,17 @@ fn decode_psd_robust(bytes: &[u8]) -> Result<DynamicImage, String> {
         let width = psd.width();
         let height = psd.height();
         let rgba = psd.rgba();
-        let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
-            ImageBuffer::from_raw(width, height, rgba)
-                .ok_or_else(|| "Failed to create image buffer".to_string())?;
+        let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(width, height, rgba)
+            .ok_or_else(|| "Failed to create image buffer".to_string())?;
         Ok::<DynamicImage, String>(DynamicImage::ImageRgba8(img_buf))
     }));
 
     match result {
         Ok(Ok(img)) if is_image_valid(&img) => Ok(img),
-        Ok(Ok(_)) => Err("PSD画像のデコード結果が不正です（画像データが破損している可能性があります）".to_string()),
+        Ok(Ok(_)) => Err(
+            "PSD画像のデコード結果が不正です（画像データが破損している可能性があります）"
+                .to_string(),
+        ),
         Ok(Err(e)) => Err(e),
         Err(_) => Err("PSD解析中にエラーが発生しました".to_string()),
     }
@@ -796,7 +871,10 @@ fn decode_psd_fallback(bytes: &[u8]) -> Result<DynamicImage, String> {
     let color_mode = read_u16(bytes, &mut offset)?;
 
     if depth != 8 {
-        return Err(format!("フォールバックパーサーは{}bit深度に未対応です", depth));
+        return Err(format!(
+            "フォールバックパーサーは{}bit深度に未対応です",
+            depth
+        ));
     }
 
     // Color Mode Data セクションをスキップ
@@ -878,7 +956,10 @@ fn decode_psd_fallback(bytes: &[u8]) -> Result<DynamicImage, String> {
             chs
         }
         _ => {
-            return Err(format!("未対応の圧縮方式です (compression={})", compression));
+            return Err(format!(
+                "未対応の圧縮方式です (compression={})",
+                compression
+            ));
         }
     };
 
@@ -890,11 +971,20 @@ fn decode_psd_fallback(bytes: &[u8]) -> Result<DynamicImage, String> {
         let c_ch = &channel_data[0];
         let m_ch = &channel_data[1.min(channel_data.len() - 1)];
         let y_ch = &channel_data[2.min(channel_data.len() - 1)];
-        let k_ch = if channel_data.len() >= 4 { &channel_data[3] } else { c_ch };
+        let k_ch = if channel_data.len() >= 4 {
+            &channel_data[3]
+        } else {
+            c_ch
+        };
         for i in 0..pixel_count {
             let j = i * 4;
-            let (c, m, y, k) = (c_ch[i] as u16, m_ch[i] as u16, y_ch[i] as u16, k_ch[i] as u16);
-            rgba[j]     = 255 - ((c + k).min(255) as u8);
+            let (c, m, y, k) = (
+                c_ch[i] as u16,
+                m_ch[i] as u16,
+                y_ch[i] as u16,
+                k_ch[i] as u16,
+            );
+            rgba[j] = 255 - ((c + k).min(255) as u8);
             rgba[j + 1] = 255 - ((m + k).min(255) as u8);
             rgba[j + 2] = 255 - ((y + k).min(255) as u8);
             rgba[j + 3] = 255;
@@ -902,11 +992,19 @@ fn decode_psd_fallback(bytes: &[u8]) -> Result<DynamicImage, String> {
     } else {
         // RGB / Grayscale
         let r = &channel_data[0];
-        let g = if channel_data.len() >= 2 { &channel_data[1] } else { r };
-        let b = if channel_data.len() >= 3 { &channel_data[2] } else { r };
+        let g = if channel_data.len() >= 2 {
+            &channel_data[1]
+        } else {
+            r
+        };
+        let b = if channel_data.len() >= 3 {
+            &channel_data[2]
+        } else {
+            r
+        };
         for i in 0..pixel_count {
             let j = i * 4;
-            rgba[j]     = r[i];
+            rgba[j] = r[i];
             rgba[j + 1] = g[i];
             rgba[j + 2] = b[i];
             rgba[j + 3] = 255;
@@ -920,7 +1018,14 @@ fn decode_psd_fallback(bytes: &[u8]) -> Result<DynamicImage, String> {
 }
 
 // PackBits (RLE) デコード
-fn decode_packbits(src: &[u8], src_start: usize, src_len: usize, dst: &mut [u8], dst_start: usize, dst_len: usize) {
+fn decode_packbits(
+    src: &[u8],
+    src_start: usize,
+    src_len: usize,
+    dst: &mut [u8],
+    dst_start: usize,
+    dst_len: usize,
+) {
     let mut s = src_start;
     let mut d = dst_start;
     let src_end = src_start + src_len;
@@ -940,7 +1045,9 @@ fn decode_packbits(src: &[u8], src_start: usize, src_len: usize, dst: &mut [u8],
         } else if n > -128 {
             // 繰り返し: 1-n 回
             let count = (1 - n as i16) as usize;
-            if s >= src_end { break; }
+            if s >= src_end {
+                break;
+            }
             let val = src[s];
             s += 1;
             let end = (d + count).min(dst_end);
@@ -967,7 +1074,12 @@ fn read_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, String> {
     if *offset + 4 > bytes.len() {
         return Err("PSD data truncated (u32)".to_string());
     }
-    let val = u32::from_be_bytes([bytes[*offset], bytes[*offset + 1], bytes[*offset + 2], bytes[*offset + 3]]);
+    let val = u32::from_be_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
     *offset += 4;
     Ok(val)
 }
@@ -977,8 +1089,14 @@ fn read_u64(bytes: &[u8], offset: &mut usize) -> Result<u64, String> {
         return Err("PSD data truncated (u64)".to_string());
     }
     let val = u64::from_be_bytes([
-        bytes[*offset], bytes[*offset + 1], bytes[*offset + 2], bytes[*offset + 3],
-        bytes[*offset + 4], bytes[*offset + 5], bytes[*offset + 6], bytes[*offset + 7],
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+        bytes[*offset + 4],
+        bytes[*offset + 5],
+        bytes[*offset + 6],
+        bytes[*offset + 7],
     ]);
     *offset += 8;
     Ok(val)
@@ -1017,21 +1135,24 @@ fn encode_to_jpeg_temp(img: &DynamicImage, cache_key: &str) -> Result<String, St
 
     let rgb = img.to_rgb8();
     let tmp_path = temp_dir.join(format!("{}.tmp", filename));
-    let file = fs::File::create(&tmp_path)
-        .map_err(|e| format!("Failed to create temp file: {}", e))?;
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-        std::io::BufWriter::new(file), 85
-    );
+    let file =
+        fs::File::create(&tmp_path).map_err(|e| format!("Failed to create temp file: {}", e))?;
+    let encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::BufWriter::new(file), 85);
     rgb.write_with_encoder(encoder)
         .map_err(|e| format!("JPEG encode error: {}", e))?;
-    fs::rename(&tmp_path, &file_path)
-        .map_err(|e| format!("Failed to rename temp file: {}", e))?;
+    fs::rename(&tmp_path, &file_path).map_err(|e| format!("Failed to rename temp file: {}", e))?;
 
     Ok(file_path.to_string_lossy().to_string())
 }
 
 // RGBAバッファをPNGでtempファイルに書き出し、パスを返す（差分画像用）
-fn encode_rgba_to_png_temp(buf: &[u8], width: u32, height: u32, cache_key: &str) -> Result<String, String> {
+fn encode_rgba_to_png_temp(
+    buf: &[u8],
+    width: u32,
+    height: u32,
+    cache_key: &str,
+) -> Result<String, String> {
     let temp_dir = get_kenban_temp_dir()?;
     let filename = {
         let mut hasher = DefaultHasher::new();
@@ -1044,16 +1165,14 @@ fn encode_rgba_to_png_temp(buf: &[u8], width: u32, height: u32, cache_key: &str)
         return Ok(file_path.to_string_lossy().to_string());
     }
 
-    let img: ImageBuffer<Rgba<u8>, &[u8]> =
-        ImageBuffer::from_raw(width, height, buf)
-            .ok_or_else(|| "Failed to create image buffer".to_string())?;
+    let img: ImageBuffer<Rgba<u8>, &[u8]> = ImageBuffer::from_raw(width, height, buf)
+        .ok_or_else(|| "Failed to create image buffer".to_string())?;
     let tmp_path = temp_dir.join(format!("{}.tmp", filename));
-    let file = fs::File::create(&tmp_path)
-        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    let file =
+        fs::File::create(&tmp_path).map_err(|e| format!("Failed to create temp file: {}", e))?;
     img.write_to(&mut std::io::BufWriter::new(file), image::ImageFormat::Png)
         .map_err(|e| format!("PNG encode error: {}", e))?;
-    fs::rename(&tmp_path, &file_path)
-        .map_err(|e| format!("Failed to rename temp file: {}", e))?;
+    fs::rename(&tmp_path, &file_path).map_err(|e| format!("Failed to rename temp file: {}", e))?;
 
     Ok(file_path.to_string_lossy().to_string())
 }
@@ -1066,7 +1185,11 @@ struct DiffPixel {
 // ピクセル単位の単純差分計算 (rayon行並列)
 // 返り値: (差分RGBAバッファ, 差分ピクセル数, 差分ピクセル座標リスト)
 fn diff_simple_core(
-    a: &[u8], b: &[u8], width: u32, height: u32, threshold: u8,
+    a: &[u8],
+    b: &[u8],
+    width: u32,
+    height: u32,
+    threshold: u8,
 ) -> (Vec<u8>, u32, Vec<DiffPixel>) {
     let threshold = threshold as i16;
     let row_size = (width as usize) * 4;
@@ -1089,9 +1212,9 @@ fn diff_simple_core(
                 let db = (row_a[i + 2] as i16 - row_b[i + 2] as i16).abs();
 
                 if dr > threshold || dg > threshold || db > threshold {
-                    row_buf[i] = 255;     // R
-                    row_buf[i + 1] = 0;   // G
-                    row_buf[i + 2] = 0;   // B
+                    row_buf[i] = 255; // R
+                    row_buf[i + 1] = 0; // G
+                    row_buf[i + 2] = 0; // B
                     row_buf[i + 3] = 255; // A
                     count += 1;
                     pixels.push(DiffPixel { x: x as u32, y });
@@ -1121,7 +1244,11 @@ fn diff_simple_core(
 
 // ヒートマップ差分計算（積分画像→密度マップ→着色）
 fn diff_heatmap_core(
-    a: &[u8], b: &[u8], width: u32, height: u32, threshold: u8,
+    a: &[u8],
+    b: &[u8],
+    width: u32,
+    height: u32,
+    threshold: u8,
 ) -> (Vec<u8>, u32, Vec<DiffPixel>) {
     let w = width as usize;
     let h = height as usize;
@@ -1132,13 +1259,19 @@ fn diff_heatmap_core(
         .into_par_iter()
         .flat_map(|y| {
             let offset = y * w * 4;
-            (0..w).map(move |x| {
-                let i = offset + x * 4;
-                let dr = (a[i] as i16 - b[i] as i16).abs();
-                let dg = (a[i + 1] as i16 - b[i + 1] as i16).abs();
-                let db = (a[i + 2] as i16 - b[i + 2] as i16).abs();
-                if dr > threshold || dg > threshold || db > threshold { 1u8 } else { 0u8 }
-            }).collect::<Vec<_>>()
+            (0..w)
+                .map(move |x| {
+                    let i = offset + x * 4;
+                    let dr = (a[i] as i16 - b[i] as i16).abs();
+                    let dg = (a[i + 1] as i16 - b[i + 1] as i16).abs();
+                    let db = (a[i + 2] as i16 - b[i + 2] as i16).abs();
+                    if dr > threshold || dg > threshold || db > threshold {
+                        1u8
+                    } else {
+                        0u8
+                    }
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
 
@@ -1149,9 +1282,7 @@ fn diff_heatmap_core(
     for y in 0..h {
         for x in 0..w {
             let idx = (y + 1) * iw + (x + 1);
-            integral[idx] = diff_mask[y * w + x] as f32
-                + integral[idx - 1]
-                + integral[idx - iw]
+            integral[idx] = diff_mask[y * w + x] as f32 + integral[idx - 1] + integral[idx - iw]
                 - integral[idx - iw - 1];
         }
     }
@@ -1162,22 +1293,28 @@ fn diff_heatmap_core(
         .into_par_iter()
         .map(|y| {
             let mut row_max = 0f32;
-            let row: Vec<f32> = (0..w).map(|x| {
-                let x1 = (x as i32 - radius).max(0) as usize;
-                let y1 = (y as i32 - radius).max(0) as usize;
-                let x2 = ((x as i32 + radius) as usize).min(w - 1);
-                let y2 = ((y as i32 + radius) as usize).min(h - 1);
-                let area = ((x2 - x1 + 1) * (y2 - y1 + 1)) as f32;
-                let sum = integral[(y2 + 1) * iw + (x2 + 1)]
-                    - integral[y1 * iw + (x2 + 1)]
-                    - integral[(y2 + 1) * iw + x1]
-                    + integral[y1 * iw + x1];
-                let d = sum / area;
-                if d > row_max { row_max = d; }
-                d
-            }).collect();
+            let row: Vec<f32> = (0..w)
+                .map(|x| {
+                    let x1 = (x as i32 - radius).max(0) as usize;
+                    let y1 = (y as i32 - radius).max(0) as usize;
+                    let x2 = ((x as i32 + radius) as usize).min(w - 1);
+                    let y2 = ((y as i32 + radius) as usize).min(h - 1);
+                    let area = ((x2 - x1 + 1) * (y2 - y1 + 1)) as f32;
+                    let sum = integral[(y2 + 1) * iw + (x2 + 1)]
+                        - integral[y1 * iw + (x2 + 1)]
+                        - integral[(y2 + 1) * iw + x1]
+                        + integral[y1 * iw + x1];
+                    let d = sum / area;
+                    if d > row_max {
+                        row_max = d;
+                    }
+                    d
+                })
+                .collect();
             // rowとrow_maxをタプルで返す（後でflatten）
-            row.into_iter().map(move |d| (d, row_max)).collect::<Vec<_>>()
+            row.into_iter()
+                .map(move |d| (d, row_max))
+                .collect::<Vec<_>>()
         })
         .flatten()
         .collect();
@@ -1199,18 +1336,29 @@ fn diff_heatmap_core(
                 let pixel_idx = y * w + x;
                 let di = x * 4;
                 let (density, _) = density_and_max[pixel_idx];
-                let normalized = if max_density > 0.0 { density / max_density } else { 0.0 };
+                let normalized = if max_density > 0.0 {
+                    density / max_density
+                } else {
+                    0.0
+                };
 
                 if diff_mask[pixel_idx] == 1 && density > density_threshold {
                     let (r, g, b) = if normalized < 0.3 {
                         (0u8, (normalized / 0.3 * 200.0) as u8, 200u8)
                     } else if normalized < 0.6 {
                         let t = (normalized - 0.3) / 0.3;
-                        ((t * 255.0) as u8, (200.0 + t * 55.0) as u8, ((1.0 - t) * 200.0) as u8)
+                        (
+                            (t * 255.0) as u8,
+                            (200.0 + t * 55.0) as u8,
+                            ((1.0 - t) * 200.0) as u8,
+                        )
                     } else {
                         let t = (normalized - 0.6) / 0.4;
                         high_count += 1;
-                        high_pixels.push(DiffPixel { x: x as u32, y: y as u32 });
+                        high_pixels.push(DiffPixel {
+                            x: x as u32,
+                            y: y as u32,
+                        });
                         (255u8, ((1.0 - t) * 255.0) as u8, 0u8)
                     };
                     row_buf[di] = r;
@@ -1243,7 +1391,10 @@ fn diff_heatmap_core(
 
 // Union-Findクラスタリング → DiffMarkerリスト
 fn cluster_markers(
-    pixels: &[DiffPixel], grid_size: u32, min_cluster: u32, min_radius: f64,
+    pixels: &[DiffPixel],
+    grid_size: u32,
+    min_cluster: u32,
+    min_radius: f64,
 ) -> Vec<DiffMarker> {
     if pixels.is_empty() {
         return Vec::new();
@@ -1265,7 +1416,13 @@ fn cluster_markers(
         let gx = (p.x / grid_size) as i32;
         let gy = (p.y / grid_size) as i32;
         let cell = grid.entry((gx, gy)).or_insert(GridCell {
-            gx, gy, count: 0, min_x: p.x, max_x: p.x, min_y: p.y, max_y: p.y,
+            gx,
+            gy,
+            count: 0,
+            min_x: p.x,
+            max_x: p.x,
+            min_y: p.y,
+            max_y: p.y,
         });
         cell.count += 1;
         cell.min_x = cell.min_x.min(p.x);
@@ -1315,15 +1472,23 @@ fn cluster_markers(
         g.4 += cell.count;
     }
 
-    let mut markers: Vec<DiffMarker> = groups.values()
+    let mut markers: Vec<DiffMarker> = groups
+        .values()
         .filter(|g| g.4 >= min_cluster)
         .map(|g| {
             let cx = (g.0 as f64 + g.1 as f64) / 2.0;
             let cy = (g.2 as f64 + g.3 as f64) / 2.0;
-            let radius_x = (g.1 as f64 - g.0 as f64) / 2.0 + if min_radius > 200.0 { 100.0 } else { 60.0 };
-            let radius_y = (g.3 as f64 - g.2 as f64) / 2.0 + if min_radius > 200.0 { 100.0 } else { 60.0 };
+            let radius_x =
+                (g.1 as f64 - g.0 as f64) / 2.0 + if min_radius > 200.0 { 100.0 } else { 60.0 };
+            let radius_y =
+                (g.3 as f64 - g.2 as f64) / 2.0 + if min_radius > 200.0 { 100.0 } else { 60.0 };
             let marker_radius = min_radius.max(radius_x.max(radius_y));
-            DiffMarker { x: cx, y: cy, radius: marker_radius, count: g.4 }
+            DiffMarker {
+                x: cx,
+                y: cy,
+                radius: marker_radius,
+                count: g.4,
+            }
         })
         .collect();
 
@@ -1334,13 +1499,12 @@ fn cluster_markers(
 // tiff-tiff / psd-psd 用の差分計算
 #[tauri::command]
 fn compute_diff_simple(
-    path_a: String, path_b: String, threshold: u8,
+    path_a: String,
+    path_b: String,
+    threshold: u8,
 ) -> Result<DiffSimpleResult, String> {
     // 2ファイル並列デコード
-    let (img_a, img_b) = rayon::join(
-        || decode_image_file(&path_a),
-        || decode_image_file(&path_b),
-    );
+    let (img_a, img_b) = rayon::join(|| decode_image_file(&path_a), || decode_image_file(&path_b));
     let img_a = img_a?;
     let img_b = img_b?;
 
@@ -1381,10 +1545,12 @@ fn compute_diff_simple(
     );
     let (src_a_result, (src_b_result, diff_result)) = rayon::join(
         || encode_to_jpeg_temp(&img_a, &cache_a),
-        || rayon::join(
-            || encode_to_jpeg_temp(&img_b, &cache_b),
-            || encode_rgba_to_png_temp(&diff_buf, width, height, &cache_d),
-        ),
+        || {
+            rayon::join(
+                || encode_to_jpeg_temp(&img_b, &cache_b),
+                || encode_rgba_to_png_temp(&diff_buf, width, height, &cache_d),
+            )
+        },
     );
 
     Ok(DiffSimpleResult {
@@ -1402,7 +1568,10 @@ fn compute_diff_simple(
 // psd-tiff 用のヒートマップ差分計算
 #[tauri::command]
 fn compute_diff_heatmap(
-    psd_path: String, tiff_path: String, crop_bounds: CropBounds, threshold: u8,
+    psd_path: String,
+    tiff_path: String,
+    crop_bounds: CropBounds,
+    threshold: u8,
 ) -> Result<DiffHeatmapResult, String> {
     // 並列デコード
     let (psd_result, tiff_result) = rayon::join(
@@ -1456,14 +1625,18 @@ fn compute_diff_heatmap(
         versioned_path_key(&tiff_path)
     );
     let ((src_a_result, src_b_result), (processed_a_result, diff_result)) = rayon::join(
-        || rayon::join(
-            || encode_to_jpeg_temp(&psd_img, &cache_a),
-            || encode_to_jpeg_temp(&tiff_img, &cache_b),
-        ),
-        || rayon::join(
-            || encode_to_jpeg_temp(&processed_psd, &cache_pa),
-            || encode_rgba_to_png_temp(&heatmap_buf, tiff_w, tiff_h, &cache_d),
-        ),
+        || {
+            rayon::join(
+                || encode_to_jpeg_temp(&psd_img, &cache_a),
+                || encode_to_jpeg_temp(&tiff_img, &cache_b),
+            )
+        },
+        || {
+            rayon::join(
+                || encode_to_jpeg_temp(&processed_psd, &cache_pa),
+                || encode_rgba_to_png_temp(&heatmap_buf, tiff_w, tiff_h, &cache_d),
+            )
+        },
     );
 
     Ok(DiffHeatmapResult {
@@ -1483,13 +1656,12 @@ fn compute_diff_heatmap(
 // Phase1用: 軽量差分チェック（画像エンコードなし）
 #[tauri::command]
 fn check_diff_simple(
-    path_a: String, path_b: String, threshold: u8,
+    path_a: String,
+    path_b: String,
+    threshold: u8,
 ) -> Result<DiffCheckSimpleResult, String> {
     // 2ファイル並列デコード
-    let (img_a, img_b) = rayon::join(
-        || decode_image_file(&path_a),
-        || decode_image_file(&path_b),
-    );
+    let (img_a, img_b) = rayon::join(|| decode_image_file(&path_a), || decode_image_file(&path_b));
     let img_a = img_a?;
     let img_b = img_b?;
 
@@ -1533,7 +1705,10 @@ fn check_diff_simple(
 // Phase1用: 軽量ヒートマップ差分チェック（画像エンコードなし）
 #[tauri::command]
 fn check_diff_heatmap(
-    psd_path: String, tiff_path: String, crop_bounds: CropBounds, threshold: u8,
+    psd_path: String,
+    tiff_path: String,
+    crop_bounds: CropBounds,
+    threshold: u8,
 ) -> Result<DiffCheckHeatmapResult, String> {
     // 並列デコード
     let (psd_result, tiff_result) = rayon::join(
@@ -1597,25 +1772,40 @@ fn get_pdfium() -> Result<Pdfium, String> {
         .ok_or_else(|| "Failed to get exe directory".to_string())?
         .to_path_buf();
 
-    let bindings = Pdfium::bind_to_library(
-        Pdfium::pdfium_platform_library_name_at_path(&exe_dir)
-    ).or_else(|_| Pdfium::bind_to_system_library())
-        .map_err(|e| format!("Failed to load PDFium library: {}. Place pdfium.dll next to the executable.", e))?;
+    let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&exe_dir))
+        .or_else(|_| Pdfium::bind_to_system_library())
+        .map_err(|e| {
+            format!(
+                "Failed to load PDFium library: {}. Place pdfium.dll next to the executable.",
+                e
+            )
+        })?;
 
     Ok(Pdfium::new(bindings))
 }
 
 /// PDFiumで指定ページをRGBA画像にレンダリング
-fn render_pdf_page_pdfium(pdfium: &Pdfium, path: &str, page: u32, dpi: f32) -> Result<(Vec<u8>, u32, u32), String> {
-    let doc = pdfium.load_pdf_from_file(path, None)
+fn render_pdf_page_pdfium(
+    pdfium: &Pdfium,
+    path: &str,
+    page: u32,
+    dpi: f32,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let doc = pdfium
+        .load_pdf_from_file(path, None)
         .map_err(|e| format!("Failed to open PDF '{}': {}", path, e))?;
 
     let page_count = doc.pages().len() as u32;
     if page >= page_count {
-        return Err(format!("Page {} out of range (total: {})", page, page_count));
+        return Err(format!(
+            "Page {} out of range (total: {})",
+            page, page_count
+        ));
     }
 
-    let pg = doc.pages().get(page as u16)
+    let pg = doc
+        .pages()
+        .get(page as u16)
         .map_err(|e| format!("Failed to load page {}: {}", page, e))?;
 
     let scale = dpi / 72.0;
@@ -1623,7 +1813,8 @@ fn render_pdf_page_pdfium(pdfium: &Pdfium, path: &str, page: u32, dpi: f32) -> R
         .scale_page_by_factor(scale)
         .use_print_quality(true);
 
-    let bitmap = pg.render_with_config(&config)
+    let bitmap = pg
+        .render_with_config(&config)
         .map_err(|e| format!("Failed to render page {}: {}", page, e))?;
 
     let width = bitmap.width() as u32;
@@ -1636,7 +1827,11 @@ fn render_pdf_page_pdfium(pdfium: &Pdfium, path: &str, page: u32, dpi: f32) -> R
 // PDF-PDF差分計算（PDFiumレンダリング + rayon並列差分）
 #[tauri::command]
 fn compute_pdf_diff(
-    path_a: String, path_b: String, page: u32, dpi: f32, threshold: u8,
+    path_a: String,
+    path_b: String,
+    page: u32,
+    dpi: f32,
+    threshold: u8,
 ) -> Result<DiffSimpleResult, String> {
     let pdfium = get_pdfium()?;
 
@@ -1648,22 +1843,24 @@ fn compute_pdf_diff(
 
     // サイズが異なる場合はDynamicImageでリサイズ
     let rgba_a = if wa != width || ha != height {
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
-            ImageBuffer::from_raw(wa, ha, samples_a)
-                .ok_or_else(|| "Failed to create image buffer A".to_string())?;
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(wa, ha, samples_a)
+            .ok_or_else(|| "Failed to create image buffer A".to_string())?;
         let dyn_img = DynamicImage::ImageRgba8(img);
-        dyn_img.resize_exact(width, height, FilterType::Triangle).to_rgba8()
+        dyn_img
+            .resize_exact(width, height, FilterType::Triangle)
+            .to_rgba8()
     } else {
         ImageBuffer::from_raw(wa, ha, samples_a)
             .ok_or_else(|| "Failed to create image buffer A".to_string())?
     };
 
     let rgba_b = if wb != width || hb != height {
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
-            ImageBuffer::from_raw(wb, hb, samples_b)
-                .ok_or_else(|| "Failed to create image buffer B".to_string())?;
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(wb, hb, samples_b)
+            .ok_or_else(|| "Failed to create image buffer B".to_string())?;
         let dyn_img = DynamicImage::ImageRgba8(img);
-        dyn_img.resize_exact(width, height, FilterType::Triangle).to_rgba8()
+        dyn_img
+            .resize_exact(width, height, FilterType::Triangle)
+            .to_rgba8()
     } else {
         ImageBuffer::from_raw(wb, hb, samples_b)
             .ok_or_else(|| "Failed to create image buffer B".to_string())?
@@ -1689,10 +1886,12 @@ fn compute_pdf_diff(
     );
     let (src_a_result, (src_b_result, diff_result)) = rayon::join(
         || encode_to_jpeg_temp(&img_a, &cache_a),
-        || rayon::join(
-            || encode_to_jpeg_temp(&img_b, &cache_b),
-            || encode_rgba_to_png_temp(&diff_buf, width, height, &cache_d),
-        ),
+        || {
+            rayon::join(
+                || encode_to_jpeg_temp(&img_b, &cache_b),
+                || encode_rgba_to_png_temp(&diff_buf, width, height, &cache_d),
+            )
+        },
     );
 
     Ok(DiffSimpleResult {
@@ -1717,7 +1916,10 @@ struct PdfPageImage {
 
 #[tauri::command]
 fn render_pdf_page(
-    path: String, page: u32, dpi: f32, split_side: Option<String>,
+    path: String,
+    page: u32,
+    dpi: f32,
+    split_side: Option<String>,
 ) -> Result<PdfPageImage, String> {
     let pdfium = get_pdfium()?;
     let (samples, width, height) = render_pdf_page_pdfium(&pdfium, &path, page, dpi)?;
@@ -1738,12 +1940,15 @@ fn render_pdf_page(
                 .ok_or_else(|| "Failed to create split image buffer".to_string())?;
         let cache_key = format!("pdfpage_{}_p{}_{}", versioned_path_key(&path), page, side);
         let src = encode_to_jpeg_temp(&DynamicImage::ImageRgba8(split_img), &cache_key)?;
-        return Ok(PdfPageImage { src, width: half_width, height });
+        return Ok(PdfPageImage {
+            src,
+            width: half_width,
+            height,
+        });
     }
 
-    let full_img: ImageBuffer<Rgba<u8>, Vec<u8>> =
-        ImageBuffer::from_raw(width, height, samples)
-            .ok_or_else(|| "Failed to create image buffer".to_string())?;
+    let full_img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(width, height, samples)
+        .ok_or_else(|| "Failed to create image buffer".to_string())?;
     let cache_key = format!("pdfpage_{}_p{}", versioned_path_key(&path), page);
     let src = encode_to_jpeg_temp(&DynamicImage::ImageRgba8(full_img), &cache_key)?;
     Ok(PdfPageImage { src, width, height })
@@ -1753,7 +1958,8 @@ fn render_pdf_page(
 #[tauri::command]
 fn get_pdf_page_count(path: String) -> Result<u32, String> {
     let pdfium = get_pdfium()?;
-    let doc = pdfium.load_pdf_from_file(&path, None)
+    let doc = pdfium
+        .load_pdf_from_file(&path, None)
         .map_err(|e| format!("Failed to open PDF '{}': {}", path, e))?;
     Ok(doc.pages().len() as u32)
 }
@@ -1769,16 +1975,188 @@ fn get_cli_args(state: State<'_, AppState>) -> Vec<String> {
     state.cli_args.clone()
 }
 
+fn unix_now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+fn utc_now_parts() -> (i64, usize, i64, u64, u64, u64) {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    let mut year = 1970i64;
+    let mut remaining_days = (secs / 86400) as i64;
+    loop {
+        let days_in_year = if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
+            366
+        } else {
+            365
+        };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 0usize;
+    for (i, &days) in month_days.iter().enumerate() {
+        if remaining_days < days as i64 {
+            month = i;
+            break;
+        }
+        remaining_days -= days as i64;
+    }
+
+    (year, month + 1, remaining_days + 1, hours, minutes, seconds)
+}
+
+fn utc_now_iso() -> String {
+    let (year, month, day, hours, minutes, seconds) = utc_now_parts();
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z",
+        year, month, day, hours, minutes, seconds
+    )
+}
+
+fn utc_today() -> String {
+    let (year, month, day, _, _, _) = utc_now_parts();
+    format!("{:04}-{:02}-{:02}", year, month, day)
+}
+
+fn normalize_path_text(path: &str) -> String {
+    path.replace('/', "\\")
+}
+
+fn json_label_and_work(
+    file_path: &str,
+    data: Option<&serde_json::Value>,
+) -> Option<(String, String)> {
+    let path = Path::new(file_path);
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("json"))
+        != Some(true)
+    {
+        return None;
+    }
+
+    let normalized_path = normalize_path_text(file_path);
+    let normalized_base = normalize_path_text(JSON_FOLDER_BASE_PATH);
+    if !normalized_path
+        .to_lowercase()
+        .starts_with(&normalized_base.to_lowercase())
+    {
+        return None;
+    }
+
+    let relative = normalized_path
+        .trim_start_matches(&normalized_base)
+        .trim_start_matches('\\');
+    let mut parts = relative.split('\\').filter(|part| !part.is_empty());
+    let label = parts.next()?.to_string();
+    let fallback_work = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let work = data
+        .and_then(|value| {
+            value
+                .get("presetData")
+                .and_then(|preset_data| preset_data.get("workInfo"))
+                .and_then(|work_info| work_info.get("title"))
+                .and_then(|title| title.as_str())
+        })
+        .filter(|title| !title.trim().is_empty())
+        .map(|title| title.to_string())
+        .unwrap_or(fallback_work);
+
+    Some((label, work))
+}
+
+fn write_json_access_log(action: &str, file_path: &str, data: Option<&serde_json::Value>) {
+    let Some((label_name, work_title)) = json_label_and_work(file_path, data) else {
+        return;
+    };
+
+    let log_dir = Path::new(JSON_ACCESS_LOG_BASE_PATH);
+    if let Err(error) = fs::create_dir_all(log_dir) {
+        eprintln!("JSON access log folder create failed: {error}");
+        return;
+    }
+
+    let log_path = log_dir.join(format!("json_access_{}.jsonl", utc_today()));
+    let payload = serde_json::json!({
+        "schemaVersion": 1,
+        "occurredAt": utc_now_iso(),
+        "occurredAtMs": unix_now_ms(),
+        "appName": "KENBAN",
+        "appVersion": env!("CARGO_PKG_VERSION"),
+        "action": action,
+        "labelName": label_name,
+        "workTitle": work_title,
+        "path": file_path,
+        "userName": std::env::var("USERNAME").unwrap_or_default(),
+        "userDomain": std::env::var("USERDOMAIN").unwrap_or_default(),
+        "computerName": std::env::var("COMPUTERNAME").unwrap_or_default(),
+    });
+
+    let Ok(line) = serde_json::to_string(&payload) else {
+        return;
+    };
+
+    match fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        Ok(mut file) => {
+            let _ = writeln!(file, "{line}");
+        }
+        Err(error) => eprintln!("JSON access log write failed: {error}"),
+    }
+}
+
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path)
-        .map_err(|e| format!("ファイル読み込みエラー: {}", e))
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("ファイル読み込みエラー: {}", e))?;
+    let parsed = serde_json::from_str::<serde_json::Value>(&content).ok();
+    write_json_access_log("read", &path, parsed.as_ref());
+    Ok(content)
 }
 
 #[tauri::command]
 fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content.as_bytes())
-        .map_err(|e| format!("ファイル書き込みエラー: {}", e))
+        .map_err(|e| format!("ファイル書き込みエラー: {}", e))?;
+    let parsed = serde_json::from_str::<serde_json::Value>(&content).ok();
+    write_json_access_log("write", &path, parsed.as_ref());
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

@@ -501,46 +501,46 @@ export default function MangaDiffDetector() {
     return ext.some(e => name.endsWith(e));
   }, [getAcceptedExtensions]);
 
-  // JSON読み込み
+  const applyJsonContent = useCallback((content: string): CropBounds => {
+    const json = JSON.parse(content);
+
+    // パターン0: presetData.selectionRangesが空配列（クロップなし＝PSD全体を使用）
+    if (json.presetData?.selectionRanges && json.presetData.selectionRanges.length === 0) {
+      const noCrop: CropBounds = { left: 0, top: 0, right: -1, bottom: -1 };
+      setCropBounds(noCrop);
+      return noCrop;
+    }
+
+    // パターン1: presetData.selectionRanges[0].bounds (新形式)
+    if (json.presetData?.selectionRanges?.length > 0 && json.presetData.selectionRanges[0].bounds) {
+      const bounds = json.presetData.selectionRanges[0].bounds;
+      setCropBounds(bounds);
+      return bounds;
+    }
+
+    // パターン2: selectionRanges[0].bounds (従来形式)
+    if (json.selectionRanges && json.selectionRanges.length > 0 && json.selectionRanges[0].bounds) {
+      const bounds = json.selectionRanges[0].bounds;
+      setCropBounds(bounds);
+      return bounds;
+    }
+
+    // パターン3: bounds直接 (レガシー)
+    if (json.bounds) {
+      setCropBounds(json.bounds);
+      return json.bounds;
+    }
+
+    throw new Error('boundsが見つかりません');
+  }, []);
+
+  // JSON読み込み（ブラウザD&Dなど、フルパスが取れない経路）
   const loadJsonFile = useCallback((file: File): Promise<CropBounds> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (ev) => {
         try {
-          const json = JSON.parse(ev.target?.result as string);
-
-          // パターン0: presetData.selectionRangesが空配列（クロップなし＝PSD全体を使用）
-          if (json.presetData?.selectionRanges && json.presetData.selectionRanges.length === 0) {
-            const noCrop: CropBounds = { left: 0, top: 0, right: -1, bottom: -1 };
-            setCropBounds(noCrop);
-            resolve(noCrop);
-            return;
-          }
-
-          // パターン1: presetData.selectionRanges[0].bounds (新形式)
-          if (json.presetData?.selectionRanges?.length > 0 && json.presetData.selectionRanges[0].bounds) {
-            const bounds = json.presetData.selectionRanges[0].bounds;
-            setCropBounds(bounds);
-            resolve(bounds);
-            return;
-          }
-
-          // パターン2: selectionRanges[0].bounds (従来形式)
-          if (json.selectionRanges && json.selectionRanges.length > 0 && json.selectionRanges[0].bounds) {
-            const bounds = json.selectionRanges[0].bounds;
-            setCropBounds(bounds);
-            resolve(bounds);
-            return;
-          }
-
-          // パターン3: bounds直接 (レガシー)
-          if (json.bounds) {
-            setCropBounds(json.bounds);
-            resolve(json.bounds);
-            return;
-          }
-
-          reject(new Error('boundsが見つかりません'));
+          resolve(applyJsonContent(ev.target?.result as string));
         } catch (err) {
           reject(err);
         }
@@ -548,7 +548,13 @@ export default function MangaDiffDetector() {
       reader.onerror = reject;
       reader.readAsText(file);
     });
-  }, []);
+  }, [applyJsonContent]);
+
+  // JSON読み込み（Tauriパスあり。GドライブJSONアクセスログの対象）
+  const loadJsonPath = useCallback(async (path: string): Promise<CropBounds> => {
+    const content = await invoke<string>('read_text_file', { path });
+    return applyJsonContent(content);
+  }, [applyJsonContent]);
 
   // diffCacheをクリアするヘルパー
   const cleanupPageCache = (_cache: Record<string, PageCache>) => {
@@ -894,16 +900,16 @@ export default function MangaDiffDetector() {
             return;
           }
 
-          const allFiles = await readFilesFromPaths(paths);
-          if (allFiles.length === 0) {
-            alert(`ファイル読み込みエラー\nパス: ${paths.join(', ')}`);
+          if (side === 'json') {
+            const jsonPath = paths.find(p => p.toLowerCase().endsWith('.json'));
+            if (!jsonPath) { alert('JSONファイルが見つかりません'); return; }
+            try { await loadJsonPath(jsonPath); } catch { alert('JSONの解析に失敗しました'); }
             return;
           }
 
-          if (side === 'json') {
-            const jsonFile = allFiles.find(f => f.name.toLowerCase().endsWith('.json'));
-            if (!jsonFile) { alert('JSONファイルが見つかりません'); return; }
-            try { await loadJsonFile(jsonFile); } catch { alert('JSONの解析に失敗しました'); }
+          const allFiles = await readFilesFromPaths(paths);
+          if (allFiles.length === 0) {
+            alert(`ファイル読み込みエラー\nパス: ${paths.join(', ')}`);
             return;
           }
 
@@ -934,7 +940,7 @@ export default function MangaDiffDetector() {
     const unlistenPromise = setupDragDrop();
     return () => { unlistenPromise.then(fn => fn()); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readFilesFromPaths, isAcceptedFile, getAcceptedExtensions, loadJsonFile, getDropZoneFromPosition, handleParallelTauriDrop]);
+  }, [readFilesFromPaths, isAcceptedFile, getAcceptedExtensions, loadJsonFile, loadJsonPath, getDropZoneFromPosition, handleParallelTauriDrop]);
 
   // ウィンドウ閉じ時の未保存チェック
   useEffect(() => {
