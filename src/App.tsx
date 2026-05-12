@@ -393,8 +393,8 @@ export default function MangaDiffDetector() {
   // PDF最適化進捗コールバックの設定
   useEffect(() => {
     setOptimizeProgressCallback((fileName, message, current, total) => {
-      // PDFモード以外では進捗表示を無視
-      if (compareModeRef.current !== 'pdf-pdf') return;
+      // pdf-pdf 比較モード または 並列ビュー（PDF読み込み中）でのみ進捗を表示
+      if (compareModeRef.current !== 'pdf-pdf' && appModeRef.current !== 'parallel-view') return;
       setOptimizeProgress({ fileName, message, current, total });
     });
     return () => setOptimizeProgressCallback(null);
