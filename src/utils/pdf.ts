@@ -1,6 +1,7 @@
 import * as pdfjs from 'pdfjs-dist';
 import { jsPDF } from 'jspdf';
-import { PDFDocument } from 'pdf-lib';
+import PdfOptimizeWorker from '../workers/pdfOptimize.worker?worker';
+import type { WorkerMessage as PdfOptimizeWorkerMessage } from '../workers/pdfOptimize.worker';
 
 // PDF.js Worker設定
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -35,51 +36,40 @@ export const checkPdfFileSize = (file: File): boolean => {
 export const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 
 /**
- * pdf-libによる軽量PDF最適化
+ * pdf-libによる軽量PDF最適化（Web Workerで実行 → メインスレッドをブロックしない）
  * ページをコピーすることで不要なリソースを削除し、ファイルサイズを削減
  */
+let optimizeRequestId = 0;
 async function optimizePdfResources(
   arrayBuffer: ArrayBuffer,
   onProgress?: (message: string, current?: number, total?: number) => void
 ): Promise<ArrayBuffer> {
-  // UIが更新される時間を確保
-  if (onProgress) onProgress('PDFを解析しています...');
-  await nextFrame();
-  await new Promise(resolve => setTimeout(resolve, 50)); // UI更新待ち
+  return new Promise((resolve, reject) => {
+    const worker = new PdfOptimizeWorker();
+    const id = ++optimizeRequestId;
 
-  // 元のPDFを読み込み（pdf-lib: WASM不要）
-  const srcPdf = await PDFDocument.load(arrayBuffer, {
-    ignoreEncryption: true
+    worker.onmessage = (e: MessageEvent<PdfOptimizeWorkerMessage>) => {
+      const msg = e.data;
+      if (msg.id !== id) return;
+      if (msg.type === 'progress') {
+        if (onProgress) onProgress(msg.message, msg.current, msg.total);
+      } else if (msg.type === 'result') {
+        worker.terminate();
+        resolve(msg.buffer);
+      } else if (msg.type === 'error') {
+        worker.terminate();
+        reject(new Error(msg.error));
+      }
+    };
+
+    worker.onerror = (err) => {
+      worker.terminate();
+      reject(err.error || new Error(err.message || 'PDF optimize worker error'));
+    };
+
+    // ArrayBuffer を Transferable で渡す（コピーなし）
+    worker.postMessage({ type: 'optimize', id, buffer: arrayBuffer }, [arrayBuffer]);
   });
-
-  const pageCount = srcPdf.getPageCount();
-  if (onProgress) onProgress('PDFを最適化しています...', 0, pageCount);
-  await nextFrame();
-
-  // 新しいPDFドキュメントを作成
-  const pdfDoc = await PDFDocument.create();
-
-  // 全ページをコピー（これにより参照されていないリソースは含まれない）
-  const pageIndices = Array.from({ length: pageCount }, (_, i) => i);
-  const copiedPages = await pdfDoc.copyPages(srcPdf, pageIndices);
-
-  for (let i = 0; i < copiedPages.length; i++) {
-    pdfDoc.addPage(copiedPages[i]);
-
-    // 進捗を報告（毎ページ）
-    if (onProgress) onProgress('PDFを最適化しています...', i + 1, pageCount);
-    await nextFrame();
-  }
-
-  if (onProgress) onProgress('最適化されたPDFを生成しています...', pageCount, pageCount);
-  await nextFrame();
-
-  // 最適化されたPDFを出力（useObjectStreams: falseで高速化）
-  const optimizedBytes = await pdfDoc.save({ useObjectStreams: false });
-
-  if (onProgress) onProgress('最適化完了', pageCount, pageCount);
-
-  return optimizedBytes.buffer as ArrayBuffer;
 }
 
 async function compressPdfViaCanvas(
@@ -145,7 +135,24 @@ async function compressPdfViaCanvas(
 // ============== LRUキャッシュ（MojiQから移植） ==============
 const PDF_CACHE_MAX_SIZE = 60; // 最大60エントリ（30ページ × 2ファイル）
 
-class LRUCache<T> {
+// MojiQ流: デバイスメモリに応じてキャッシュサイズを決定
+export function getOptimalPdfUrlCacheSize(): number {
+  const perf = performance as Performance & { memory?: { jsHeapSizeLimit?: number } };
+  const heap = perf.memory?.jsHeapSizeLimit;
+  if (heap) {
+    if (heap >= 1024 * 1024 * 1024) return 60;
+    if (heap >= 512 * 1024 * 1024) return 40;
+    return 20;
+  }
+  const dm = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  if (dm) {
+    if (dm >= 8) return 60;
+    if (dm >= 4) return 40;
+  }
+  return 30;
+}
+
+export class LRUCache<T> {
   private maxSize: number;
   private cache = new Map<string, T>();
   private onEvict?: (value: T) => void;  // メモリ解放コールバック

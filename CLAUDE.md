@@ -21,6 +21,9 @@ Tauri 2 + React + TypeScript + Rust で構成。
 - `src/components/ScreenshotEditor.tsx` - スクリーンショット指示エディタ
 - `src/utils/textExtract.ts` - PSDテキスト抽出、差分計算（行セットマッチング、チャンク区切り）
 - `src/utils/memoParser.ts` - メモテキストのページ分割・`<<X,YPage>>`パターン解析
+- `src/utils/pdf.ts` - PDFキャッシュマネージャ、LRUキャッシュ、Worker起動ラッパ、`nextFrame`/`getOptimalPdfUrlCacheSize`
+- `src/workers/pdfOptimize.worker.ts` - PDF最適化（pdf-lib による未参照リソース除去）Web Worker
+- `src/workers/textExtractWorker.ts` - PSDテキスト抽出 + 差分計算の Web Worker
 - `src/index.css` - Tailwind CSS v4 @theme カラートークン、フォント、スクロールバー
 - `src/App.css` - フルスクリーンアニメーション、ベーススタイル
 - `src-tauri/src/lib.rs` - Rustバックエンド（Tauriコマンド）
@@ -51,6 +54,9 @@ cargo check            # Rustのみコンパイルチェック（src-tauri/内�
 - `parse_psd` - PSDファイルのデコード
 - `decode_and_resize_image` - 画像デコード＋リサイズ（並列ビュー用）
 - `preload_images` - 画像プリロード
+- `render_pdf_page` - PDFium で 1 ページを RGBA→JPEG temp 出力（並列ビュー用、`high_quality=false`）
+- `compute_pdf_diff` - PDFium で両ファイルをレンダリング+ rayon 並列差分計算（pdf-pdf 比較用、`high_quality=true`）
+- `get_pdf_page_count` - PDF の総ページ数取得
 - `open_pdf_in_mojiq` - MojiQアプリでPDFを開く
 - `open_file_with_default_app` - デフォルトアプリで開く
 - `list_files_in_folder` - フォルダ内ファイル一覧
@@ -100,6 +106,38 @@ cargo check            # Rustのみコンパイルチェック（src-tauri/内�
    - ZIP圧縮は未対応（エラー表示で止まる、クラッシュはしない）
 
 対象関数: `parse_psd` (並列ビュー表示用) / `decode_psd_to_image` (差分比較用)
+
+## PDFパフォーマンスアーキテクチャ
+PDF読み込み・表示で UI フリーズや過剰なメモリ消費を起こさないため、以下のポリシーで設計されている (MojiQ アーキテクチャを参考に移植)。
+
+### レンダリングDPI ポリシー
+- **並列ビュー表示用** (`render_pdf_page`): **150 DPI** + `use_print_quality(false)` — 速度優先、表示に充分
+- **pdf-pdf 差分計算用** (`compute_pdf_diff`): **300 DPI** + `use_print_quality(true)` — 差分検出精度を優先
+- 切り替えは `render_pdf_page_pdfium(..., high_quality: bool)` の第5引数で行う
+
+### キャッシュ戦略
+- **`pdfUrlCacheRef`** (App.tsx): 並列ビューの PDF ページ URL を保持する LRU。サイズは `getOptimalPdfUrlCacheSize()` で `performance.memory.jsHeapSizeLimit` / `navigator.deviceMemory` から動的決定 (20〜60)
+- **`pdfCache.bitmapCache`** (pdf.ts): pdf-pdf 比較で使う ImageBitmap LRU (60 上限、evict 時に `bitmap.close()` でGPUメモリ解放)
+- **`diffCache`** (App.tsx): pdf-pdf 差分結果の DataURL キャッシュ (現状無制限、ファイル/インデックス切替で再生成)
+
+### バックグラウンド事前レンダリング (進捗バー付き)
+PDF読み込み時に全ページを直列バックグラウンドで処理し、`globalOptimizeProgress` で N/M 進捗を画面中央バナーに表示する。各 useEffect は `AbortController` 付きで、ファイル切り替え時に前ジョブを即停止する。
+- **並列ビュー**: `render_pdf_page` (DPI 150) を 1 ページずつ実行、各ページ後に `nextFrame()` + 30ms 待機で UI 圧迫を回避
+- **pdf-pdf 比較**: `compute_pdf_diff` (DPI 300) を 1 ページずつ実行、50ms 待機で GC 機会を確保
+- 完了時に「完了」メッセージで `optimizeProgress` を発火 → [App.tsx] の自動非表示ロジックで 1 秒後に消える
+
+### PDF最適化 (`optimizePdfResources`)
+- pdf-lib による未参照リソース除去。10MB 〜 500MB の PDF に適用
+- **Web Worker** (`src/workers/pdfOptimize.worker.ts`) で実行 → メインスレッドを完全に解放
+- ArrayBuffer は Transferable で受け渡し (コピーなし)
+- 500MB 超は別経路で `compressPdfViaCanvas` (pdfjs + jsPDF で Canvas 再構築)
+
+### ページ未完了時のフォールバック表示
+- **並列ビュー**: `parallelPdfImageA/B` が null の間、A 側は青、B 側は緑の `Loader2` スピナーを表示 ([ParallelViewer.tsx])
+- **pdf-pdf 比較**: 既存の `isLoadingPage` フラグで小スピナーを表示
+
+### Canvas描画
+- `ParallelViewer.drawToCanvasWithScale`: `dpr = Math.min(2, devicePixelRatio)` で頭打ち。150DPI 出力に対して 3 倍 dpr は過剰なため
 
 ## テキスト照合アーキテクチャ
 - `extractVisibleTextLayers` (ag-psd) → レイヤー単位テキスト抽出 → マンガ読み順ソート

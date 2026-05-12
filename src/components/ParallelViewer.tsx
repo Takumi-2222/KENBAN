@@ -197,7 +197,8 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
     maxW: number,
     maxH: number,
   ) => {
-    const dpr = window.devicePixelRatio || 1;
+    // 150DPI のRust出力に対して dpr=3 だと過剰なので 2 で頭打ち（MojiQ流）
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
 
     // object-contain相当: アスペクト比を維持して指定領域に収める
     const imgRatio = img.naturalWidth / img.naturalHeight;
@@ -729,8 +730,10 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                     </div>
                   </div>
                 )}
-                {/* PDF表示: Rust PDFiumレンダリング → canvas同期描画 */}
-                {parallelFilesA[parallelIndexA]?.type === 'pdf' && parallelPdfImageA ? (
+                {/* PDF表示: Rust PDFiumレンダリング → canvas同期描画。未完了時は小スピナー */}
+                {parallelFilesA[parallelIndexA]?.type === 'pdf' && !parallelPdfImageA ? (
+                  <Loader2 size={32} className="animate-spin text-blue-400 opacity-50" />
+                ) : parallelFilesA[parallelIndexA]?.type === 'pdf' && parallelPdfImageA ? (
                   <>
                     <canvas
                       ref={pdfCanvasRefA}
@@ -941,8 +944,10 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                     </div>
                   </div>
                 )}
-                {/* PDF表示: Rust PDFiumレンダリング → canvas同期描画 */}
-                {parallelFilesB[parallelIndexB]?.type === 'pdf' && parallelPdfImageB ? (
+                {/* PDF表示: Rust PDFiumレンダリング → canvas同期描画。未完了時は小スピナー */}
+                {parallelFilesB[parallelIndexB]?.type === 'pdf' && !parallelPdfImageB ? (
+                  <Loader2 size={32} className="animate-spin text-green-400 opacity-50" />
+                ) : parallelFilesB[parallelIndexB]?.type === 'pdf' && parallelPdfImageB ? (
                   <>
                     <canvas
                       ref={pdfCanvasRefB}

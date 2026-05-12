@@ -1785,11 +1785,13 @@ fn get_pdfium() -> Result<Pdfium, String> {
 }
 
 /// PDFiumで指定ページをRGBA画像にレンダリング
+/// high_quality=true は差分計算用 (print quality 有効)。並列ビュー表示用は false。
 fn render_pdf_page_pdfium(
     pdfium: &Pdfium,
     path: &str,
     page: u32,
     dpi: f32,
+    high_quality: bool,
 ) -> Result<(Vec<u8>, u32, u32), String> {
     let doc = pdfium
         .load_pdf_from_file(path, None)
@@ -1811,7 +1813,7 @@ fn render_pdf_page_pdfium(
     let scale = dpi / 72.0;
     let config = PdfRenderConfig::new()
         .scale_page_by_factor(scale)
-        .use_print_quality(true);
+        .use_print_quality(high_quality);
 
     let bitmap = pg
         .render_with_config(&config)
@@ -1835,8 +1837,8 @@ fn compute_pdf_diff(
 ) -> Result<DiffSimpleResult, String> {
     let pdfium = get_pdfium()?;
 
-    let (samples_a, wa, ha) = render_pdf_page_pdfium(&pdfium, &path_a, page, dpi)?;
-    let (samples_b, wb, hb) = render_pdf_page_pdfium(&pdfium, &path_b, page, dpi)?;
+    let (samples_a, wa, ha) = render_pdf_page_pdfium(&pdfium, &path_a, page, dpi, true)?;
+    let (samples_b, wb, hb) = render_pdf_page_pdfium(&pdfium, &path_b, page, dpi, true)?;
 
     let width = wa.max(wb);
     let height = ha.max(hb);
@@ -1922,7 +1924,8 @@ fn render_pdf_page(
     split_side: Option<String>,
 ) -> Result<PdfPageImage, String> {
     let pdfium = get_pdfium()?;
-    let (samples, width, height) = render_pdf_page_pdfium(&pdfium, &path, page, dpi)?;
+    // 並列ビュー表示用なので print quality を無効化（速度優先）
+    let (samples, width, height) = render_pdf_page_pdfium(&pdfium, &path, page, dpi, false)?;
 
     // 見開き分割: 左右半分を切り出し
     if let Some(ref side) = split_side {

@@ -512,28 +512,30 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                     {currentPair.hasDiff && currentMarkers.length > 0 && <div className="bg-cyan-900/70 text-cyan-300 px-3 py-1.5 rounded-lg shadow-lg text-sm font-semibold flex items-center gap-1 pointer-events-none border border-cyan-500/20"><Target size={14} /> {currentMarkers.length}箇所</div>}
                     {/* 差分ガイドナビゲーション */}
                     {diffFileIndices.length > 0 && (
-                      <div className="flex items-center gap-2 px-3 py-1.5 bg-neutral-800/90 backdrop-blur-md rounded-lg border border-white/[0.08] shadow-lg">
-                        <span className="inline-flex h-2 w-2 rounded-full shrink-0 bg-red-400/80" />
-                        <span className="text-xs font-semibold tracking-wide text-red-400/70">差分</span>
-                        <div className="w-px h-4 bg-white/[0.10]" />
-                        <span className="text-sm font-semibold min-w-[32px] text-center tabular-nums">
+                      <div className="flex flex-col items-center gap-1.5 px-2 py-2 bg-neutral-800/90 backdrop-blur-md rounded-lg border border-white/[0.08] shadow-lg">
+                        <div className="flex items-center gap-1.5">
+                          <span className="inline-flex h-2 w-2 rounded-full shrink-0 bg-red-400/80" />
+                          <span className="text-xs font-semibold tracking-wide text-red-400/70">差分</span>
+                        </div>
+                        <div className="h-px w-6 bg-white/[0.10]" />
+                        <span className="text-sm font-semibold text-center tabular-nums leading-tight">
                           {diffNavPosition.current >= 0 ? (
                             <><span className="text-neutral-200">{diffNavPosition.current + 1}</span><span className="text-neutral-500">/</span><span className="text-neutral-500">{diffNavPosition.total}</span></>
                           ) : (
                             <><span className="text-neutral-500">--</span><span className="text-neutral-500">/</span><span className="text-neutral-500">{diffNavPosition.total}</span></>
                           )}
                         </span>
-                        <div className="w-px h-4 bg-white/[0.10]" />
+                        <div className="h-px w-6 bg-white/[0.10]" />
                         <button
                           onClick={goPrevDiffFile}
-                          className="p-1.5 -m-0.5 rounded transition-colors text-neutral-400 hover:text-neutral-100 hover:bg-white/[0.08]"
+                          className="p-1 rounded transition-colors text-neutral-400 hover:text-neutral-100 hover:bg-white/[0.08]"
                           title="前の差分ファイル (K)"
                         >
                           <ArrowUp size={14} />
                         </button>
                         <button
                           onClick={goNextDiffFile}
-                          className="p-1.5 -m-0.5 rounded transition-colors text-neutral-400 hover:text-neutral-100 hover:bg-white/[0.08]"
+                          className="p-1 rounded transition-colors text-neutral-400 hover:text-neutral-100 hover:bg-white/[0.08]"
                           title="次の差分ファイル (J)"
                         >
                           <ArrowDown size={14} />

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { CheckCircle, AlertTriangle, Loader2, RefreshCw, Download } from 'lucide-react';
-import { pdfCache, checkPdfFileSize, globalOptimizeProgress, setOptimizeProgressCallback } from './utils/pdf';
+import { pdfCache, checkPdfFileSize, globalOptimizeProgress, setOptimizeProgressCallback, LRUCache, getOptimalPdfUrlCacheSize, nextFrame } from './utils/pdf';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { readFile as tauriReadFile, readDir } from '@tauri-apps/plugin-fs';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
@@ -427,8 +427,10 @@ export default function MangaDiffDetector() {
   // PDF表示更新（ダブルビューワー用）- Rust PDFiumレンダリング
   const [parallelPdfImageA, setParallelPdfImageA] = useState<string | null>(null);
   const [parallelPdfImageB, setParallelPdfImageB] = useState<string | null>(null);
-  // PDFページURLのフロントエンドキャッシュ（IPC不要で即表示するため）
-  const pdfUrlCacheRef = useRef<Record<string, string>>({});
+  // PDFページURLのフロントエンドキャッシュ（LRU上限あり、メモリに応じて動的サイズ）
+  const pdfUrlCacheRef = useRef<LRUCache<string>>(new LRUCache<string>(getOptimalPdfUrlCacheSize()));
+  // PDFプリフェッチのキャンセル用 AbortController
+  const pdfPrefetchAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (appMode !== 'parallel-view') return;
@@ -442,8 +444,8 @@ export default function MangaDiffDetector() {
     const keyA = isPdfA ? `${entryA.path}:${entryA.pdfPage! - 1}:${entryA.spreadSide || ''}` : '';
     const keyB = isPdfB ? `${entryB.path}:${entryB.pdfPage! - 1}:${entryB.spreadSide || ''}` : '';
 
-    const cachedA = isPdfA ? pdfUrlCacheRef.current[keyA] : null;
-    const cachedB = isPdfB ? pdfUrlCacheRef.current[keyB] : null;
+    const cachedA = isPdfA ? pdfUrlCacheRef.current.get(keyA) ?? null : null;
+    const cachedB = isPdfB ? pdfUrlCacheRef.current.get(keyB) ?? null : null;
 
     const needA = isPdfA && !cachedA;
     const needB = isPdfB && !cachedB;
@@ -455,14 +457,14 @@ export default function MangaDiffDetector() {
       return;
     }
 
-    // キャッシュミス分のみIPCでレンダリング
+    // キャッシュミス分のみIPCでレンダリング（並列ビュー表示用 → DPI 150）
     (async () => {
       const [resultA, resultB] = await Promise.all([
         needA
           ? invoke<{ src: string; width: number; height: number }>('render_pdf_page', {
               path: entryA.path,
               page: entryA.pdfPage! - 1,
-              dpi: 300.0,
+              dpi: 150.0,
               splitSide: entryA.spreadSide || null,
             }).catch(err => { console.error('PDF render A error:', err); return null; })
           : Promise.resolve(null),
@@ -470,17 +472,17 @@ export default function MangaDiffDetector() {
           ? invoke<{ src: string; width: number; height: number }>('render_pdf_page', {
               path: entryB.path,
               page: entryB.pdfPage! - 1,
-              dpi: 300.0,
+              dpi: 150.0,
               splitSide: entryB.spreadSide || null,
             }).catch(err => { console.error('PDF render B error:', err); return null; })
           : Promise.resolve(null),
       ]);
 
-      if (resultA) pdfUrlCacheRef.current[keyA] = convertFileSrc(resultA.src);
-      if (resultB) pdfUrlCacheRef.current[keyB] = convertFileSrc(resultB.src);
+      if (resultA) pdfUrlCacheRef.current.set(keyA, convertFileSrc(resultA.src));
+      if (resultB) pdfUrlCacheRef.current.set(keyB, convertFileSrc(resultB.src));
 
-      setParallelPdfImageA(resultA ? pdfUrlCacheRef.current[keyA] : cachedA);
-      setParallelPdfImageB(resultB ? pdfUrlCacheRef.current[keyB] : cachedB);
+      setParallelPdfImageA(resultA ? (pdfUrlCacheRef.current.get(keyA) ?? null) : cachedA);
+      setParallelPdfImageB(resultB ? (pdfUrlCacheRef.current.get(keyB) ?? null) : cachedB);
     })();
   }, [appMode, parallelFilesA, parallelFilesB, parallelIndexA, parallelIndexB]);
 
@@ -1679,11 +1681,17 @@ export default function MangaDiffDetector() {
     loadPage();
   }, [currentPage, selectedIndex, pairs, compareMode, diffCache]);
 
-  // PDF全ページの差分を一斉計算（バックグラウンド）
+  // PDF全ページの差分を一斉計算（バックグラウンド、進捗バー付き、キャンセル可能）
+  const pdfDiffAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
     if (compareMode !== 'pdf-pdf') return;
     const pair = pairs[selectedIndex];
     if (!pair || pair.status !== 'done' || !pair.totalPages || pair.totalPages <= 1) return;
+
+    // 前回のジョブをキャンセル
+    pdfDiffAbortRef.current?.abort();
+    const ac = new AbortController();
+    pdfDiffAbortRef.current = ac;
 
     const calculateAllPages = async () => {
       // 現在ページの前後3ページを優先、残りはアイドル時に順次処理
@@ -1698,8 +1706,20 @@ export default function MangaDiffDetector() {
 
       const pathA = (pair.fileA as FileWithPath).filePath!;
       const pathB = (pair.fileB as FileWithPath).filePath!;
+      const fileLabel = pair.fileA?.name || pair.fileB?.name || 'PDF';
+      const totalPages = pair.totalPages!;
+
+      let completed = 0;
+      // 初期進捗（既にキャッシュ済みのページ数を反映）
+      for (const p of pageOrder) {
+        if (diffCache[`${selectedIndex}-${p}`]) completed++;
+      }
+      if (globalOptimizeProgress && completed < totalPages) {
+        globalOptimizeProgress(fileLabel, 'PDF差分を計算中...', completed, totalPages);
+      }
 
       for (const page of pageOrder) {
+        if (ac.signal.aborted) return;
         const cacheKey = `${selectedIndex}-${page}`;
         if (diffCache[cacheKey]) continue;
 
@@ -1713,11 +1733,13 @@ export default function MangaDiffDetector() {
           }>('compute_pdf_diff', {
             pathA, pathB, page: page - 1, dpi: 300.0, threshold: 5
           });
+          if (ac.signal.aborted) return;
 
           const srcA = convertFileSrc(result.src_a);
           const srcB = convertFileSrc(result.src_b);
           const diffSrc = convertFileSrc(result.diff_src);
           const diffSrcWithMarkers = await drawMarkersOnImage(diffSrc, result.markers, 'simple');
+          if (ac.signal.aborted) return;
 
           setDiffCache(prev => {
             if (prev[cacheKey]) return prev;
@@ -1733,16 +1755,28 @@ export default function MangaDiffDetector() {
           });
           setPdfComputingPages(prev => { const next = new Set(prev); next.delete(cacheKey); return next; });
 
+          completed++;
+          if (globalOptimizeProgress) {
+            globalOptimizeProgress(fileLabel, 'PDF差分を計算中...', completed, totalPages);
+          }
+
           // ページ間で少し待機してGCの機会を与える
           await new Promise(r => setTimeout(r, 50));
         } catch (err) {
+          if (ac.signal.aborted) return;
           console.error(`Page ${page} diff calculation error:`, err);
           setPdfComputingPages(prev => { const next = new Set(prev); next.delete(cacheKey); return next; });
         }
       }
+
+      if (!ac.signal.aborted && globalOptimizeProgress) {
+        globalOptimizeProgress(fileLabel, '完了', totalPages, totalPages);
+      }
     };
 
     calculateAllPages();
+
+    return () => { ac.abort(); };
   }, [selectedIndex, pairs, compareMode]); // diffCacheは依存配列から除外（無限ループ防止）
 
   // ============== 並列ビューモード用の関数 ==============
@@ -2265,7 +2299,7 @@ export default function MangaDiffDetector() {
     filesB: ParallelFileEntry[] = parallelFilesB,
     direction: 'forward' | 'backward' = 'forward'
   ) => {
-    const preloadRange = 5;
+    const preloadRange = 2;
     // 優先度付きパスリスト（先頭が最優先）
     const prioritizedPaths: string[] = [];
     const prioritizedPsdPaths: string[] = [];
@@ -2316,23 +2350,37 @@ export default function MangaDiffDetector() {
       invoke('preload_images', { paths: prioritizedPaths, maxWidth, maxHeight }).catch(console.error);
     }
 
-    // PDFページをRust側で先読み → フロントエンドキャッシュ + ブラウザメモリにプリロード
-    for (const pdfEntry of prioritizedPdfEntries) {
-      const key = `${pdfEntry.path}:${pdfEntry.page}:${pdfEntry.splitSide || ''}`;
-      if (pdfUrlCacheRef.current[key]) continue; // 既にキャッシュ済み
+    // PDFページの先読み: 前回のプリフェッチをキャンセルし、新たに直列+50ms待機で実行
+    // (MojiQ流: 連打時の無駄レンダリングを防ぎ、UIへの圧迫を減らす)
+    pdfPrefetchAbortRef.current?.abort();
+    const pdfAc = new AbortController();
+    pdfPrefetchAbortRef.current = pdfAc;
 
-      invoke<{ src: string; width: number; height: number }>('render_pdf_page', {
-        path: pdfEntry.path,
-        page: pdfEntry.page,
-        dpi: 300.0,
-        splitSide: pdfEntry.splitSide,
-      }).then(result => {
-        const url = convertFileSrc(result.src);
-        pdfUrlCacheRef.current[key] = url;
-        // ブラウザの画像キャッシュにも事前読み込み（表示時に即描画される）
-        new Image().src = url;
-      }).catch(() => {});
-    }
+    (async () => {
+      for (const pdfEntry of prioritizedPdfEntries) {
+        if (pdfAc.signal.aborted) return;
+        const key = `${pdfEntry.path}:${pdfEntry.page}:${pdfEntry.splitSide || ''}`;
+        if (pdfUrlCacheRef.current.has(key)) continue;
+
+        await new Promise(r => setTimeout(r, 50));
+        if (pdfAc.signal.aborted) return;
+        await nextFrame();
+        if (pdfAc.signal.aborted) return;
+
+        try {
+          const result = await invoke<{ src: string; width: number; height: number }>('render_pdf_page', {
+            path: pdfEntry.path,
+            page: pdfEntry.page,
+            dpi: 150.0,
+            splitSide: pdfEntry.splitSide,
+          });
+          if (pdfAc.signal.aborted) return;
+          const url = convertFileSrc(result.src);
+          pdfUrlCacheRef.current.set(key, url);
+          new Image().src = url; // ブラウザ画像キャッシュに事前ロード
+        } catch { /* プリフェッチ失敗は無視 */ }
+      }
+    })();
 
     // PSDを優先度順に先読み（バックグラウンド）
     for (const path of prioritizedPsdPaths) {
@@ -2370,12 +2418,13 @@ export default function MangaDiffDetector() {
     );
   }, [parallelFilesA, parallelFilesB]); // ファイルリスト変更時のみ発火
 
-  // PDF全ページ一括バックグラウンドレンダリング（PDFロード時に全ページをキャッシュに入れる）
+  // 並列ビュー: 全PDFページをバックグラウンドで順次レンダリング（進捗バー付き、キャンセル可能）
+  const pdfAllPagesAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
     if (appMode !== 'parallel-view') return;
 
     // 全PDFエントリを収集（重複排除）
-    const pdfEntries: { path: string; page: number; splitSide: string | null; key: string }[] = [];
+    const pdfEntries: { path: string; page: number; splitSide: string | null; key: string; name: string }[] = [];
     for (const files of [parallelFilesA, parallelFilesB]) {
       for (const entry of files) {
         if (entry.type === 'pdf' && entry.path && entry.pdfPage) {
@@ -2383,44 +2432,68 @@ export default function MangaDiffDetector() {
           const splitSide = entry.spreadSide || null;
           const key = `${entry.path}:${page}:${splitSide || ''}`;
           if (!pdfEntries.some(e => e.key === key)) {
-            pdfEntries.push({ path: entry.path, page, splitSide, key });
+            const name = entry.path.split(/[/\\]/).pop() || 'PDF';
+            pdfEntries.push({ path: entry.path, page, splitSide, key, name });
           }
         }
       }
     }
     if (pdfEntries.length === 0) return;
 
-    let cancelled = false;
+    // 前回のジョブをキャンセル
+    pdfAllPagesAbortRef.current?.abort();
+    const ac = new AbortController();
+    pdfAllPagesAbortRef.current = ac;
 
-    // 現在ページのレンダリング完了を待ってからバックグラウンド開始
     (async () => {
+      const total = pdfEntries.length;
+      const fileLabel = pdfEntries[0].name;
+
+      // 既にキャッシュ済みの分は完了扱い
+      let completed = pdfEntries.filter(e => pdfUrlCacheRef.current.has(e.key)).length;
+      if (globalOptimizeProgress && completed < total) {
+        globalOptimizeProgress(fileLabel, 'PDFページを読み込み中...', completed, total);
+      }
+
+      // 現在ページのレンダリング完了を待ってからバックグラウンド開始
       await new Promise(r => setTimeout(r, 300));
+      if (ac.signal.aborted) return;
 
-      // 2ページずつ並列でバックグラウンドレンダリング
-      for (let i = 0; i < pdfEntries.length; i += 2) {
-        if (cancelled) break;
+      for (const entry of pdfEntries) {
+        if (ac.signal.aborted) return;
+        if (pdfUrlCacheRef.current.has(entry.key)) continue;
 
-        const batch = pdfEntries.slice(i, i + 2).filter(e => !pdfUrlCacheRef.current[e.key]);
-        if (batch.length === 0) continue;
+        await nextFrame();
+        if (ac.signal.aborted) return;
 
-        await Promise.all(batch.map(async (entry) => {
-          try {
-            const result = await invoke<{ src: string; width: number; height: number }>('render_pdf_page', {
-              path: entry.path,
-              page: entry.page,
-              dpi: 300.0,
-              splitSide: entry.splitSide,
-            });
-            if (cancelled) return;
-            const url = convertFileSrc(result.src);
-            pdfUrlCacheRef.current[entry.key] = url;
-            new Image().src = url; // ブラウザメモリにもプリロード
-          } catch { /* バックグラウンドなのでエラー無視 */ }
-        }));
+        try {
+          const result = await invoke<{ src: string; width: number; height: number }>('render_pdf_page', {
+            path: entry.path,
+            page: entry.page,
+            dpi: 150.0,
+            splitSide: entry.splitSide,
+          });
+          if (ac.signal.aborted) return;
+          const url = convertFileSrc(result.src);
+          pdfUrlCacheRef.current.set(entry.key, url);
+          new Image().src = url;
+        } catch { /* バックグラウンドなのでエラー無視 */ }
+
+        completed++;
+        if (globalOptimizeProgress) {
+          globalOptimizeProgress(fileLabel, 'PDFページを読み込み中...', completed, total);
+        }
+
+        // ページ間で待機（UI圧迫を避ける）
+        await new Promise(r => setTimeout(r, 30));
+      }
+
+      if (!ac.signal.aborted && globalOptimizeProgress) {
+        globalOptimizeProgress(fileLabel, '完了', total, total);
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => { ac.abort(); };
   }, [appMode, parallelFilesA, parallelFilesB]);
 
   // 並列ビューのインデックス変更時に画像を読み込み
