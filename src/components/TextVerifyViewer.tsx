@@ -31,6 +31,7 @@ interface TextVerifyViewerProps {
   stats: { matched: number; mismatched: number; pending: number; total: number };
   diffPageIndices: number[];
   openInPhotoshop: (path: string) => void;
+  openInComicBridge: (path: string) => void;
 }
 
 export default function TextVerifyViewer({
@@ -54,6 +55,7 @@ export default function TextVerifyViewer({
   stats,
   diffPageIndices,
   openInPhotoshop: launchInPhotoshop,
+  openInComicBridge: launchInComicBridge,
 }: TextVerifyViewerProps) {
   const [zoom, setZoom] = useState(1);
   const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
@@ -188,6 +190,13 @@ export default function TextVerifyViewer({
       launchInPhotoshop(currentPage.filePath);
     }
   }, [currentPage?.filePath, launchInPhotoshop]);
+
+  // COMIC-Bridge（写植）で開く
+  const openInComicBridge = useCallback(() => {
+    if (currentPage?.filePath) {
+      launchInComicBridge(currentPage.filePath);
+    }
+  }, [currentPage?.filePath, launchInComicBridge]);
 
   // 統合ビュー用データ
   const unifiedEntries = useMemo((): UnifiedDiffEntry[] => {
@@ -613,6 +622,13 @@ export default function TextVerifyViewer({
                   title="Photoshopで開く (P)"
                 >
                   Ps
+                </button>
+                <button
+                  onClick={openInComicBridge}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-[rgba(196,164,124,0.12)] text-orange-300 hover:bg-[rgba(196,164,124,0.22)] transition-colors"
+                  title="COMIC-Bridgeの写植機能で開く"
+                >
+                  CB写植
                 </button>
               </>
             )}

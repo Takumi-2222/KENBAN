@@ -70,6 +70,7 @@ interface DiffViewerProps {
   goNextDiffFile: () => void;
   goPrevDiffFile: () => void;
   openInPhotoshop: (path: string) => void;
+  openInComicBridge: (path: string) => void;
 }
 
 // モードラベル
@@ -150,6 +151,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
     goNextDiffFile,
     goPrevDiffFile,
     openInPhotoshop,
+    openInComicBridge,
   } = props;
 
   const [showFolderSelectPopup, setShowFolderSelectPopup] = useState(false);
@@ -202,6 +204,23 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                   title="Photoshopで開く"
                 >
                   <Layers size={12} />Photoshop<span className="opacity-50 text-[11px]">[P]</span>
+                </button>
+              )}
+              {(compareMode === 'psd-psd' || compareMode === 'psd-tiff') && (
+                <button
+                  onClick={() => {
+                    const psdFile = (viewMode === 'A' || viewMode === 'A-full')
+                      ? currentPair?.fileA as FileWithPath | null
+                      : (viewMode === 'B' && compareMode === 'psd-psd')
+                        ? currentPair?.fileB as FileWithPath | null
+                        : null;
+                    if (psdFile?.filePath) openInComicBridge(psdFile.filePath);
+                  }}
+                  disabled={!currentPair || currentPair.status !== 'done' || viewMode === 'diff' || (viewMode === 'B' && compareMode === 'psd-tiff')}
+                  className="px-2.5 py-1.5 text-xs rounded-md bg-[rgba(196,164,124,0.15)] hover:bg-[rgba(196,164,124,0.25)] text-orange-300 border border-[rgba(196,164,124,0.2)] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 transition-colors"
+                  title="COMIC-Bridgeの写植機能で開く"
+                >
+                  <Layers size={12} />CB写植
                 </button>
               )}
               {compareMode === 'pdf-pdf' && (

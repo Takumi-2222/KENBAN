@@ -58,9 +58,18 @@ cargo check            # Rustのみコンパイルチェック（src-tauri/内�
 - `compute_pdf_diff` - PDFium で両ファイルをレンダリング+ rayon 並列差分計算（pdf-pdf 比較用、`high_quality=true`）
 - `get_pdf_page_count` - PDF の総ページ数取得
 - `open_pdf_in_mojiq` - MojiQアプリでPDFを開く
+- `open_file_in_photoshop` - 指定PSDをPhotoshop.exeで起動（path未指定なら自動探索）
+- `open_file_in_comic_bridge` - 指定PSDを `comic-bridge.exe --shashoku <path>` 形式で起動（COMIC-Bridge側で写植関連ビューを自動オープン）
 - `open_file_with_default_app` - デフォルトアプリで開く
 - `list_files_in_folder` - フォルダ内ファイル一覧
 - `save_screenshot` - スクリーンショット保存
+
+## 外部アプリ起動ボタン（PSDモード時）
+PSDが選択可能な場面（テキスト照合 / 差分ビュー / 並列ビュー）で `Photoshop` ボタンの隣に表示:
+- **Photoshop / Ps**: そのまま PSD を Photoshop で開く（[P] キー）
+- **CB写植**: COMIC-Bridge を `--shashoku <psd_path>` で起動 → COMIC-Bridge 側が写植関連ビュー（typesetting）を自動表示
+  - 対応バージョン: COMIC-Bridge v1.9.12 以降（古い版だと CLI フラグが無視されホーム画面で開く）
+  - パス探索: `%LocalAppData%\Comic-Bridge\comic-bridge.exe` を優先、なければ Program Files
 
 ## Cargo.toml最適化
 - `[profile.dev] opt-level = 2` - dev buildでも画像処理を最適化

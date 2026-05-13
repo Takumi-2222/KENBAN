@@ -86,6 +86,7 @@ interface ParallelViewerProps {
   expandPdfToParallelEntries: (pdfPath: string, side: 'A' | 'B', droppedFile?: File, forceSplitMode?: boolean) => void;
   refreshParallelView: () => void;
   openInPhotoshop: (path: string) => void;
+  openInComicBridge: (path: string) => void;
   showHelp: boolean;
   setShowHelp: (v: boolean) => void;
   parallelDropZoneARef: React.RefObject<HTMLDivElement | null>;
@@ -162,6 +163,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
   expandPdfToParallelEntries,
   refreshParallelView,
   openInPhotoshop,
+  openInComicBridge,
   showHelp,
     setShowHelp,
     parallelDropZoneARef,
@@ -367,6 +369,29 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                       </>
                     )}
                   </div>
+                );
+              })()}
+              {/* COMIC-Bridge写植で開くボタン */}
+              {(() => {
+                const currentFileA = parallelFilesA[parallelIndexA];
+                const currentFileB = parallelFilesB[parallelIndexB];
+                const hasPsdA = currentFileA?.type === 'psd';
+                const hasPsdB = currentFileB?.type === 'psd';
+                if (!hasPsdA && !hasPsdB) return null;
+                return (
+                  <button
+                    onClick={() => {
+                      const active = parallelActivePanel === 'A' ? currentFileA : currentFileB;
+                      const fallback = hasPsdA ? currentFileA : currentFileB;
+                      const target = (active?.type === 'psd') ? active : fallback;
+                      if (target?.path) openInComicBridge(target.path);
+                    }}
+                    className={`flex items-center rounded border transition-colors bg-[rgba(196,164,124,0.15)] border-[rgba(196,164,124,0.2)] text-orange-300 hover:bg-[rgba(196,164,124,0.22)] ${hasPsdInParallel ? 'gap-1 px-2.5 py-1.5' : 'gap-1.5 px-3 py-1.5'}`}
+                    title="COMIC-Bridgeの写植機能で開く"
+                  >
+                    <Layers size={hasPsdInParallel ? 12 : 14} />
+                    CB写植
+                  </button>
                 );
               })()}
               {/* MojiQで開くボタン */}

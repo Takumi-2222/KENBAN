@@ -97,6 +97,16 @@ export default function MangaDiffDetector() {
     }
   }, [photoshopPath]);
 
+  const openInComicBridge = useCallback(async (path: string) => {
+    try {
+      await invoke('open_file_in_comic_bridge', { path, comicBridgePath: null });
+    } catch (err) {
+      const message = typeof err === 'string' ? err : 'COMIC-Bridgeの起動に失敗しました。';
+      console.error('Failed to open in COMIC-Bridge:', err);
+      window.alert(message);
+    }
+  }, []);
+
   const handleSelectPhotoshopExecutable = useCallback(async () => {
     try {
       const selected = await open({
@@ -3956,6 +3966,7 @@ export default function MangaDiffDetector() {
             stats={textVerifyStats}
             diffPageIndices={textVerifyDiffPageIndices}
             openInPhotoshop={openInPhotoshop}
+            openInComicBridge={openInComicBridge}
           />
         ) : appMode === 'diff-check' ? (
           <DiffViewer
@@ -4013,6 +4024,7 @@ export default function MangaDiffDetector() {
             releaseMemoryBeforeMojiQ={releaseMemoryBeforeMojiQ}
             setDragOverSide={setDragOverSide}
             openInPhotoshop={openInPhotoshop}
+            openInComicBridge={openInComicBridge}
             dropZoneARef={dropZoneARef}
             dropZoneBRef={dropZoneBRef}
             dropZoneJsonRef={dropZoneJsonRef}
@@ -4090,6 +4102,7 @@ export default function MangaDiffDetector() {
             expandPdfToParallelEntries={expandPdfToParallelEntries}
             refreshParallelView={refreshParallelView}
             openInPhotoshop={openInPhotoshop}
+            openInComicBridge={openInComicBridge}
             showHelp={showHelp}
             setShowHelp={setShowHelp}
             parallelDropZoneARef={parallelDropZoneARef}

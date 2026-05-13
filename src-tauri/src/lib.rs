@@ -266,6 +266,79 @@ fn open_file_in_photoshop(path: String, photoshop_path: Option<String>) -> Resul
     Ok(())
 }
 
+// COMIC-Bridge の comic-bridge.exe を探す
+fn find_comic_bridge_path() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(local_app_data) = dirs::data_local_dir() {
+        candidates.push(
+            local_app_data
+                .join("Comic-Bridge")
+                .join("comic-bridge.exe"),
+        );
+        candidates.push(
+            local_app_data
+                .join("Programs")
+                .join("Comic-Bridge")
+                .join("comic-bridge.exe"),
+        );
+    }
+
+    if let Ok(program_files) = std::env::var("ProgramFiles") {
+        candidates.push(
+            PathBuf::from(&program_files)
+                .join("Comic-Bridge")
+                .join("comic-bridge.exe"),
+        );
+    }
+
+    if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+        candidates.push(
+            PathBuf::from(&program_files_x86)
+                .join("Comic-Bridge")
+                .join("comic-bridge.exe"),
+        );
+    }
+
+    for path in candidates {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+#[tauri::command]
+fn open_file_in_comic_bridge(
+    path: String,
+    comic_bridge_path: Option<String>,
+) -> Result<(), String> {
+    let exe_path = comic_bridge_path
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(find_comic_bridge_path)
+        .ok_or_else(|| {
+            "comic-bridge.exe が見つかりません。設定から comic-bridge.exe を選択してください。"
+                .to_string()
+        })?;
+
+    if !exe_path.exists() {
+        return Err(format!(
+            "指定された comic-bridge.exe が存在しません: {}",
+            exe_path.display()
+        ));
+    }
+
+    std::process::Command::new(&exe_path)
+        .arg("--shashoku")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("Failed to launch COMIC-Bridge: {}", e))?;
+
+    Ok(())
+}
+
 // スクリーンショット保存結果
 #[derive(Serialize)]
 struct SaveScreenshotResult {
@@ -2180,6 +2253,7 @@ pub fn run() {
             parse_psd,
             open_file_with_default_app,
             open_file_in_photoshop,
+            open_file_in_comic_bridge,
             save_screenshot,
             open_folder,
             decode_and_resize_image,
