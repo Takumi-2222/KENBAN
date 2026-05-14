@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  Columns2,
   Layers,
   FileText,
   FolderOpen,
@@ -15,6 +15,8 @@ import {
   Edit3,
   Eye,
   EyeOff,
+  Menu,
+  Download,
 } from 'lucide-react';
 import type { ParallelFileEntry } from '../types';
 
@@ -175,6 +177,40 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
   const [localDragOverSide, setLocalDragOverSide] = useState<string | null>(null);
   const dragOverSide = localDragOverSide || tauriDragOverSide;
 
+  // ハンバーガーメニュー（ショートカット説明）
+  const helpButtonRef = useRef<HTMLButtonElement>(null);
+  const [helpAnchor, setHelpAnchor] = useState<{ top: number; right: number } | null>(null);
+
+  useEffect(() => {
+    if (!showHelp) return;
+    const update = () => {
+      const rect = helpButtonRef.current?.getBoundingClientRect();
+      if (rect) setHelpAnchor({ top: rect.bottom + 8, right: window.innerWidth - rect.right });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [showHelp]);
+
+  // ヘッダーのツールバースロットを探す（Header.tsx の #header-toolbar-slot にポータルで描画）
+  const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    const findSlot = () => {
+      const el = document.getElementById('header-toolbar-slot');
+      if (el) setHeaderSlot(el);
+      return !!el;
+    };
+    if (findSlot()) return;
+    let raf = requestAnimationFrame(function tick() {
+      if (!findSlot()) raf = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   // PDF canvas同期描画（両パネルを同一フレームで同時更新）
   const pdfCanvasRefA = useRef<HTMLCanvasElement>(null);
   const pdfCanvasRefB = useRef<HTMLCanvasElement>(null);
@@ -295,21 +331,12 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
     return folderPath;
   }, [parallelFolderA, parallelFolderB, parallelFilesA, parallelFilesB, getDirectoryFromPath]);
 
-  return (
-        /* 並列ビューモードのMain Viewer */
-        <div className="flex-1 flex flex-col bg-black relative">
-          {/* ヘッダー */}
-          {(() => {
-            const hasPsdInParallel = parallelFilesA.some(f => f.type === 'psd') || parallelFilesB.some(f => f.type === 'psd');
-            return (
-          <div className={`bg-neutral-800/80 backdrop-blur-sm border-b border-white/[0.06] flex items-center justify-between z-10 shrink-0 transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-b-0 overflow-hidden' : 'h-12 opacity-100 overflow-visible'} ${hasPsdInParallel ? 'px-3' : 'px-4'}`}>
-            <div className={`flex items-center flex-nowrap shrink-0 ${hasPsdInParallel ? 'gap-1.5' : 'gap-2'}`}>
-              <span className={`text-green-400 flex items-center ${hasPsdInParallel ? 'text-xs gap-1.5' : 'text-sm gap-2'}`}>
-                <Columns2 size={hasPsdInParallel ? 14 : 16} />
-                並列ビュー
-              </span>
-            </div>
-            <div className={`flex items-center flex-nowrap text-xs text-neutral-400 ${hasPsdInParallel ? 'gap-1.5' : 'gap-2'}`}>
+  const hasPsdInParallel = parallelFilesA.some(f => f.type === 'psd') || parallelFilesB.some(f => f.type === 'psd');
+
+  // ヘッダーのスロットに portal で描画するツールバー（Photoshop / CB写植 / MojiQ / フォルダ / 同期 / 更新 / 閲覧 / ハンバーガー）
+  const toolbarContent = (
+        <div className="flex items-center justify-between gap-2 flex-1 min-w-0">
+            <div className={`flex items-center flex-nowrap text-xs text-neutral-400 min-w-0 overflow-hidden ${hasPsdInParallel ? 'gap-1.5' : 'gap-2'}`}>
               {/* Photoshopで開くボタン */}
               {(() => {
                 const currentFileA = parallelFilesA[parallelIndexA];
@@ -625,40 +652,37 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                   更新<span className={`opacity-60 ${hasPsdInParallel ? 'text-[11px]' : ''}`}>[F5]</span>
                 </button>
               )}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
               {/* 全画面ボタン */}
               <button
                 onClick={toggleFullscreen}
-                className={`flex items-center rounded border transition-colors bg-neutral-700 border-white/[0.06] text-neutral-300 hover:bg-neutral-600 ${hasPsdInParallel ? 'gap-1 px-2.5 py-1.5' : 'gap-1.5 px-3 py-1.5'}`}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded border transition-colors bg-neutral-700 border-white/[0.06] text-neutral-300 hover:bg-neutral-600 text-xs shrink-0"
                 title="全画面表示 (F11)"
               >
-                <Maximize2 size={hasPsdInParallel ? 12 : 14} />
-                <span className={`opacity-60 ${hasPsdInParallel ? 'text-[11px]' : ''}`}>[F11]</span>
+                <Maximize2 size={14} />
+                <span>閲覧</span>
               </button>
-              {/* ショートカットヒント（クリックで詳細表示） */}
+              {/* ハンバーガーメニュー（ショートカット説明パネル） */}
               <button
-                onClick={() => setShowHelp(!showHelp)}
-                className="flex items-center gap-2 text-[11px] px-2 py-1 bg-neutral-900 rounded border border-white/[0.04] hover:bg-white/[0.03] transition-colors"
-                title="クリックで詳細表示"
+                ref={helpButtonRef}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowHelp(!showHelp);
+                }}
+                className="p-1.5 text-neutral-500 hover:text-neutral-200 hover:bg-white/[0.06] rounded-md transition-colors shrink-0"
+                title="ショートカット一覧"
+                aria-label="ショートカット一覧"
               >
-                <span className="flex items-center gap-1">
-                  <kbd className="px-1 py-0.5 bg-white/[0.06] rounded text-neutral-500 font-mono text-[10px] border border-white/[0.08]">↑↓</kbd>
-                  <span className="text-neutral-300">移動</span>
-                </span>
-                <span className="flex items-center gap-1">
-                  <kbd className="px-1 py-0.5 bg-white/[0.06] rounded text-neutral-500 font-mono text-[10px] border border-white/[0.08]">S</kbd>
-                  <span className="text-neutral-300">同期</span>
-                </span>
-                <span className="flex items-center gap-1">
-                  <kbd className="px-1 py-0.5 bg-white/[0.06] rounded text-neutral-500 font-mono text-[10px] border border-white/[0.08]">C</kbd>
-                  <span className="text-neutral-300">指示</span>
-                </span>
-                <HelpCircle size={11} className="text-neutral-400" />
+                <Menu size={18} />
               </button>
             </div>
-          </div>
-            );
-          })()}
+        </div>
+  );
 
+  return (
+        /* 並列ビューモードのMain Viewer */
+        <div className="flex-1 flex flex-col bg-black relative">
           {/* 左右分割ビューア */}
           <div className="flex-1 flex min-h-0">
             {/* 左パネル (フォルダ/PDFA) */}
@@ -784,16 +808,26 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           >
                             <Eye size={14} />
                           </button>
-                          <button
-                            onClick={async () => {
-                              if (parallelPdfImageA) setParallelCapturedImageA(parallelPdfImageA);
-                            }}
-                            className="flex items-center gap-1.5 px-3 py-2 bg-blue-600/90 hover:bg-blue-500 text-white rounded-lg shadow-lg transition-colors text-sm"
-                            title="指示エディタを開く (C)"
-                          >
-                            <Edit3 size={16} />
-                            指示
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleSelectParallelPdf('A'); }}
+                              className="flex items-center gap-1 px-2 py-1.5 bg-green-600/90 hover:bg-green-500 text-white rounded-md shadow-lg transition-colors text-xs"
+                              title="PDFを選択して再読み込み"
+                            >
+                              <Download size={12} />
+                              読み込み
+                            </button>
+                            <button
+                              onClick={async () => {
+                                if (parallelPdfImageA) setParallelCapturedImageA(parallelPdfImageA);
+                              }}
+                              className="flex items-center gap-1 px-2 py-1.5 bg-blue-600/90 hover:bg-blue-500 text-white rounded-md shadow-lg transition-colors text-xs"
+                              title="指示エディタを開く (C)"
+                            >
+                              <Edit3 size={12} />
+                              指示
+                            </button>
+                          </div>
                         </div>
                       )
                     )}
@@ -830,14 +864,24 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           >
                             <Eye size={14} />
                           </button>
-                          <button
-                            onClick={() => setParallelCapturedImageA(parallelImageA)}
-                            className="flex items-center gap-1.5 px-3 py-2 bg-blue-600/90 hover:bg-blue-500 text-white rounded-lg shadow-lg transition-colors text-sm"
-                            title="指示エディタを開く (C)"
-                          >
-                            <Edit3 size={16} />
-                            指示
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleSelectParallelFolder('A'); }}
+                              className="flex items-center gap-1 px-2 py-1.5 bg-green-600/90 hover:bg-green-500 text-white rounded-md shadow-lg transition-colors text-xs"
+                              title="フォルダを選択して再読み込み"
+                            >
+                              <Download size={12} />
+                              読み込み
+                            </button>
+                            <button
+                              onClick={() => setParallelCapturedImageA(parallelImageA)}
+                              className="flex items-center gap-1 px-2 py-1.5 bg-blue-600/90 hover:bg-blue-500 text-white rounded-md shadow-lg transition-colors text-xs"
+                              title="指示エディタを開く (C)"
+                            >
+                              <Edit3 size={12} />
+                              指示
+                            </button>
+                          </div>
                         </div>
                       )
                     )}
@@ -998,16 +1042,26 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           >
                             <Eye size={14} />
                           </button>
-                          <button
-                            onClick={async () => {
-                              if (parallelPdfImageB) setParallelCapturedImageB(parallelPdfImageB);
-                            }}
-                            className="flex items-center gap-1.5 px-3 py-2 bg-green-600/90 hover:bg-green-500 text-white rounded-lg shadow-lg transition-colors text-sm"
-                            title="指示エディタを開く (C)"
-                          >
-                            <Edit3 size={16} />
-                            指示
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleSelectParallelPdf('B'); }}
+                              className="flex items-center gap-1 px-2 py-1.5 bg-green-600/90 hover:bg-green-500 text-white rounded-md shadow-lg transition-colors text-xs"
+                              title="PDFを選択して再読み込み"
+                            >
+                              <Download size={12} />
+                              読み込み
+                            </button>
+                            <button
+                              onClick={async () => {
+                                if (parallelPdfImageB) setParallelCapturedImageB(parallelPdfImageB);
+                              }}
+                              className="flex items-center gap-1 px-2 py-1.5 bg-blue-600/90 hover:bg-blue-500 text-white rounded-md shadow-lg transition-colors text-xs"
+                              title="指示エディタを開く (C)"
+                            >
+                              <Edit3 size={12} />
+                              指示
+                            </button>
+                          </div>
                         </div>
                       )
                     )}
@@ -1044,14 +1098,24 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           >
                             <Eye size={14} />
                           </button>
-                          <button
-                            onClick={() => setParallelCapturedImageB(parallelImageB)}
-                            className="flex items-center gap-1.5 px-3 py-2 bg-green-600/90 hover:bg-green-500 text-white rounded-lg shadow-lg transition-colors text-sm"
-                            title="指示エディタを開く (C)"
-                          >
-                            <Edit3 size={16} />
-                            指示
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleSelectParallelFolder('B'); }}
+                              className="flex items-center gap-1 px-2 py-1.5 bg-green-600/90 hover:bg-green-500 text-white rounded-md shadow-lg transition-colors text-xs"
+                              title="フォルダを選択して再読み込み"
+                            >
+                              <Download size={12} />
+                              読み込み
+                            </button>
+                            <button
+                              onClick={() => setParallelCapturedImageB(parallelImageB)}
+                              className="flex items-center gap-1 px-2 py-1.5 bg-blue-600/90 hover:bg-blue-500 text-white rounded-md shadow-lg transition-colors text-xs"
+                              title="指示エディタを開く (C)"
+                            >
+                              <Edit3 size={12} />
+                              指示
+                            </button>
+                          </div>
                         </div>
                       )
                     )}
@@ -1090,32 +1154,40 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
             </div>
           </div>
 
-          {/* ヘルプオーバーレイ */}
-          {!isFullscreen && showHelp && (
+          {/* ヘルプパネル（document.body portal） */}
+          {!isFullscreen && showHelp && helpAnchor && createPortal(
             <>
-              <div className="fixed inset-0 z-40" onClick={() => setShowHelp(false)} />
-              <div className="absolute top-16 right-4 z-50 bg-neutral-800/95 backdrop-blur-md border border-white/[0.10] rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 text-sm min-w-64">
-                <div className="text-neutral-200 font-bold mb-3 flex items-center gap-2">
-                  <HelpCircle size={16} /> 並列ビュー操作方法
+              <div className="fixed inset-0 z-[60]" onClick={() => setShowHelp(false)} />
+              <div
+                className="fixed z-[70] bg-neutral-800/95 backdrop-blur-md border border-white/[0.10] rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] p-4 text-sm min-w-64"
+                style={{ top: helpAnchor.top, right: helpAnchor.right }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="text-neutral-200 font-semibold mb-3 flex items-center gap-2">
+                  <HelpCircle size={16} /> ショートカット
                 </div>
                 <div className="space-y-1.5 text-neutral-300">
-                  <div className="flex justify-between"><span className="text-neutral-500">↑ / ↓</span><span>ページ移動</span></div>
-                  <div className="flex justify-between"><span className="text-neutral-500">Home</span><span>最初のページ</span></div>
-                  <div className="flex justify-between"><span className="text-neutral-500">End</span><span>最後のページ</span></div>
-                  <div className="flex justify-between"><span className="text-neutral-500">S</span><span>非同期⇔同期（維持）</span></div>
-                  <div className="flex justify-between"><span className="text-neutral-500">Shift+S</span><span>元に戻して再同期</span></div>
-                  <div className="flex justify-between"><span className="text-neutral-500">← / →</span><span>パネル切替（非同期時）</span></div>
-                  <div className="flex justify-between"><span className="text-neutral-500">C</span><span>指示エディタを開く</span></div>
-                  <div className="flex justify-between"><span className="text-neutral-500">P</span><span>Photoshopで開く</span></div>
-                  <div className="flex justify-between"><span className="text-neutral-500">Q</span><span>MojiQで開く（PDF）</span></div>
-                  <div className="flex justify-between"><span className="text-neutral-500">V</span><span>モード切り替え</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">↑ / ↓</span><span>ページ移動</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">Home</span><span>最初のページ</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">End</span><span>最後のページ</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">S</span><span>非同期⇔同期（維持）</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">Shift+S</span><span>元に戻して再同期</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">← / →</span><span>パネル切替（非同期時）</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">C</span><span>指示エディタを開く</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">P</span><span>Photoshopで開く</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">Q</span><span>MojiQで開く（PDF）</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">V</span><span>モード切り替え</span></div>
                 </div>
               </div>
-            </>
+            </>,
+            document.body,
           )}
 
           {/* フッター */}
-          <div className={`bg-neutral-900 border-t border-white/[0.06] flex items-center px-4 text-xs text-neutral-500 justify-between shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-t-0' : 'h-8 opacity-100'}`}>
+          <div
+            data-tauri-drag-region
+            className={`bg-neutral-900 border-t border-white/[0.06] flex items-center px-4 text-xs text-neutral-500 justify-between shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'h-0 opacity-0 border-t-0' : 'h-8 opacity-100'}`}
+          >
             <div className="flex items-center gap-3">
               {parallelIndexA === parallelIndexB ? (
                 <span>#{parallelIndexA + 1}</span>
@@ -1135,6 +1207,9 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
               </span>
             </div>
           </div>
+
+          {/* Header.tsx のツールバースロットへ全ボタンを portal で描画 */}
+          {headerSlot && createPortal(toolbarContent, headerSlot)}
         </div>
   );
 };

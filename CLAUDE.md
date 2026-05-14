@@ -4,6 +4,35 @@
 2つの画像ファイル（TIFF/PSD/PDF）を比較して差分を検出する検版支援デスクトップアプリ。
 Tauri 2 + React + TypeScript + Rust で構成。
 
+## v2.3.0 変更点（2026-05-14）
+参照側 (`KENBAN-main`) からの機能ポート。比較モードを 5 → 7 種類に拡張。
+
+### 新比較モード
+- **psd-pdf**: PSDとPDF/画像の差分比較。スケール/オフセット手動調整 + 中心固定 5 段階自動位置合わせ（5ppm刻み）。多ページPDF + 単一PSD（または逆）は自動でページごとのペアに展開
+- **color-mono**: カラー(RGB 350dpi)とモノクロ(Grayscale 600dpi)の差分比較。ITU-R BT.601 luma による色域正規化 + モノクロ濃部マスク（紙白・淡トーン除外）
+
+### 追加 Rust コマンド
+- `compute_diff_psd_pdf` / `check_diff_psd_pdf` — psd-pdf ヒートマップ差分（scale/offset/anchor/page/diff_style パラメータ）
+- `auto_align_psd_pdf` — 中心固定 5 段階スケール探索（0.80〜1.20 → ±2% → ±0.5% → ±0.02% → ±0.005% / 5ppm刻み）+ フル解像度差分計算
+- `compute_diff_color_mono` / `check_diff_color_mono` — color-mono ヒートマップ差分（dark_threshold 既定 200）
+
+### 追加 Rust ヘルパー
+- `PsdCacheEntry` / `decode_psd_cached` — PSD デコード結果のプロセス内 LRU (2エントリ、`(path, mtime)` キー)
+- `diff_heatmap_core_masked` — マスク付き積分画像ベースのヒートマップ差分コア
+- `prepare_color_mono` — 解像度正規化 + luma グレースケール変換 + モノクロ濃部マスク生成
+- `decode_reference_for_psd_compare` — PDF/画像を PSD 寸法に合わせてレンダリング（PDFは pt 単位 viewport から DPI 算出）
+- `render_aligned_to_canvas` — アスペクト比保持フィット + ユーザー指定オフセット/倍率で平行移動
+- `score_overlap_only` / `make_scaled_mover_rgba` / `search_best_scale_centered` — auto_align のスコア計算と探索ロジック
+
+### 追加 TypeScript / UI
+- [src/types.ts](src/types.ts): `CompareMode` に `'psd-pdf'` / `'color-mono'` 追加、`FilePair.pdfPage?` 追加
+- [src/App.tsx](src/App.tsx): `psdPdfScale/OffsetX/OffsetY/Anchor` state、多ページPDF自動展開 useEffect、`processPair`/`checkPair` 拡張（psdPdfOverride 引数追加）、`autoAlignPsdPdf` / `applyPsdPdfAlignment` / `processAllPsdPdf` 関数
+- [src/components/DiffViewer.tsx](src/components/DiffViewer.tsx): 初期モード選択画面に「PSD↔PDF」「カラー/モノクロ」ボタン、ツールバーに位置調整ポップアップ（X/Y/倍率/基準切替/自動位置合わせ/リセット）
+- [src/components/Sidebar.tsx](src/components/Sidebar.tsx): モード選択に「PSD↔PDF」「カラー/モノクロ」ボタン + アクセントカラー追加
+
+### バージョン
+- 2.2.20 → 2.3.0（package.json / Cargo.toml / tauri.conf.json）
+
 ## 技術スタック
 - **フロントエンド**: React + TypeScript + Tailwind CSS (Vite)
 - **バックエンド**: Rust (Tauri 2)
@@ -48,6 +77,8 @@ cargo check            # Rustのみコンパイルチェック（src-tauri/内�
 - **psd-psd**: PSD同士の比較（シンプル差分）
 - **pdf-pdf**: PDF同士の比較（ページ単位、JS側で差分計算）
 - **psd-tiff (混合)**: PSD→TIFF出力の検証（ヒートマップ差分、JSON cropBounds必要）
+- **psd-pdf**: PSDとPDF/画像の差分。スケール/オフセット手動調整＋自動位置合わせ (5段階探索、5ppm刻み) 機能付き。B側に多ページPDFが1ファイルだけある場合は自動でページごとのペアに展開（PSD#i ↔ PDF page i）
+- **color-mono**: カラー(A=RGB 350dpi) × モノクロ(B=Grayscale 600dpi) のヒートマップ差分。解像度・色域差を正規化（ITU-R BT.601 luma）し、モノクロ濃部マスク（B側 luma ≤ 200 のみ比較対象）で紙色・淡いトーンを除外。表示はカラー/モノクロのオリジナルをそのまま見せる
 - **テキスト照合**: PSDテキストレイヤーとメモテキストの写植照合
 
 ## Rustコマンド (invoke)
@@ -56,6 +87,9 @@ cargo check            # Rustのみコンパイルチェック（src-tauri/内�
 - `preload_images` - 画像プリロード
 - `render_pdf_page` - PDFium で 1 ページを RGBA→JPEG temp 出力（並列ビュー用、`high_quality=false`）
 - `compute_pdf_diff` - PDFium で両ファイルをレンダリング+ rayon 並列差分計算（pdf-pdf 比較用、`high_quality=true`）
+- `compute_diff_psd_pdf` / `check_diff_psd_pdf` - PSD ↔ PDF/画像 のヒートマップ差分。`scale`/`offset_x`/`offset_y`/`anchor` ('ref' or 'psd') で位置合わせ、`page` で PDF ページ指定、`diff_style` で 'heatmap' or 'simple' 切替
+- `auto_align_psd_pdf` - PSD ↔ PDF/画像 の自動位置合わせ（5段階スケール探索: 2% → 0.5% → 0.05% → 0.002% → 0.0005% = 5ppm 刻み、中心固定）
+- `compute_diff_color_mono` / `check_diff_color_mono` - カラー ↔ モノクロ のヒートマップ差分。`dark_threshold` (既定200) で濃部マスクの閾値を指定
 - `get_pdf_page_count` - PDF の総ページ数取得
 - `open_pdf_in_mojiq` - MojiQアプリでPDFを開く
 - `open_file_in_photoshop` - 指定PSDをPhotoshop.exeで起動（path未指定なら自動探索）
@@ -63,6 +97,24 @@ cargo check            # Rustのみコンパイルチェック（src-tauri/内�
 - `open_file_with_default_app` - デフォルトアプリで開く
 - `list_files_in_folder` - フォルダ内ファイル一覧
 - `save_screenshot` - スクリーンショット保存
+
+## psd-pdf モードのアーキテクチャ
+PSD と PDF/画像 (TIFF/JPG/PNG) を比較するモード。
+- **多ページPDF対応**: B側が単一の多ページPDFの場合、`useEffect` で PDF ページ数 × PSD 数のペアに自動展開（`pdfPage` フィールド付き）
+- **PSDデコードキャッシュ**: `decode_psd_cached` がプロセス内 LRU (2エントリ) で `(path, mtime)` 一致時はデコード結果を再利用 → 多ページPDFで同じPSDを何十回もデコードする無駄を回避
+- **render_aligned_to_canvas**: アスペクト比保持で mover を canvas にフィット + ユーザー指定オフセット/倍率で平行移動
+- **anchor**: 'ref' (既定) = PDF/画像が基準で PSD を動かす / 'psd' = PSD が基準で PDF/画像を動かす
+- **auto_align_psd_pdf**: 中心固定の 5 段階スケール探索（重なり領域のみのSAD最小化）。サムネ最大1000pxで探索、フル解像度で最終差分計算
+- **グローバル設定**: scale/offset/anchor は全ペアに反映。変更時は他のペアを invalidate して再処理
+- **位置調整UI**: DiffViewer ツールバーの「位置調整」ポップアップ。X/Y オフセット (±1/±10px)、倍率 (±0.01)、基準切替、自動位置合わせ、リセットボタン
+
+## color-mono モードのアーキテクチャ
+カラー原稿 (RGB 350dpi) とモノクロ原稿 (Grayscale 600dpi) を比較するモード。
+- **解像度正規化**: 両画像を max(wA, wB) × max(hA, hB) に CatmullRom 上スケール
+- **色域正規化**: ITU-R BT.601 luma 式 (R\*299 + G\*587 + B\*114) / 1000 で R=G=B 置換（差分計算用、表示はオリジナルのまま）
+- **モノクロ濃部マスク**: B側 luma ≤ `dark_threshold` (既定200) のピクセルのみを比較対象 → 紙の白部分や淡いトーンを除外、人物・吹き出し・ベタだけをチェック
+- **差分計算**: `diff_heatmap_core_masked` (マスク付き積分画像 → 密度マップ → ヒートマップ着色)
+- **表示**: A=カラー / B=モノクロ をオリジナルのまま、差分のみヒートマップ画像
 
 ## 外部アプリ起動ボタン（PSDモード時）
 PSDが選択可能な場面（テキスト照合 / 差分ビュー / 並列ビュー）で `Photoshop` ボタンの隣に表示:
@@ -147,6 +199,29 @@ PDF読み込み時に全ページを直列バックグラウンドで処理し�
 
 ### Canvas描画
 - `ParallelViewer.drawToCanvasWithScale`: `dpr = Math.min(2, devicePixelRatio)` で頭打ち。150DPI 出力に対して 3 倍 dpr は過剰なため
+
+## 並列ビュー UIアーキテクチャ
+並列ビュー (`appMode === 'parallel-view'`) のツールバー / パネル内ボタン構成は次のとおり。
+
+### Header.tsx スロットへの portal 統合
+- `Header.tsx` に `<div id="header-toolbar-slot" />` のスロットがあり、ViewerはそれぞれのツールバーJSXを `createPortal(toolbarContent, document.getElementById('header-toolbar-slot'))` で差し込む（DiffViewer と同じパターン）
+- ParallelViewer 内には独立した `bg-neutral-800/80 ... h-12` 系のローカルヘッダー / 二段目ツールバーは **存在しない**。Photoshop / CB写植 / MojiQ / フォルダ / 同期⇔非同期 / 更新 / 閲覧(F11) / ハンバーガー(?) のボタンはすべて Header スロットに portal される
+- スロットを useEffect 内 `requestAnimationFrame` ループで遅延探索することで、Headerマウント順に依存しない
+- レイアウト: `justify-between` で 左=操作系ボタン、右=閲覧+ハンバーガー
+- ハンバーガーのヘルプパネルは `getBoundingClientRect()` ベースで `document.body` に portal、ボタン直下に出る
+
+### 初期モード選択 → 並列ビュー遷移時の sidebar 表示
+`initialModeSelect=true` のときサイドバーは `w-0` で隠れる（[Sidebar.tsx]）。`initialModeSelect` をクリアし忘れると並列ビューに入ってもサイドバーが消えたままになる。以下3箇所すべてで `setInitialModeSelect(false)` を呼ぶ必要がある:
+- ホーム画面 [DiffViewer.tsx] の「分割ビューアー」ボタン (`setSidebarCollapsed(false)` も合わせて)
+- [Sidebar.tsx] のモード切替「並列」ボタン
+- [App.tsx] の V キーによる `diff-check ↔ parallel-view` 切替
+
+### パネル内アクションボタン (指示エディタ + ファイル再読み込み)
+A/B 各パネルの右下 (`absolute bottom-6 right-2`) に、`Eye` トグル + 横並び2ボタンの構成で表示:
+- **読み込み (緑 `bg-green-600/90`)**: PDFパネルなら `handleSelectParallelPdf(side)`、画像/フォルダパネルなら `handleSelectParallelFolder(side)` を呼んでファイルピッカーを開く。`e.stopPropagation()` で親パネルへの伝播を阻止しないとパネル切替だけ起きてピッカーが開かない
+- **指示 (青 `bg-blue-600/90`)**: 現在の画像URLを `setParallelCapturedImage{A|B}` に渡して ScreenshotEditor を起動
+- サイズは `px-2 py-1.5 text-xs`, アイコン `size={12}`, `rounded-md`（標準の指示ボタンより約30%小さい）
+- A 側パネルでも B 側パネルでも「左から緑→青」で統一
 
 ## テキスト照合アーキテクチャ
 - `extractVisibleTextLayers` (ag-psd) → レイヤー単位テキスト抽出 → マンガ読み順ソート

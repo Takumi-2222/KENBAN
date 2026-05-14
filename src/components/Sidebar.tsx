@@ -4,6 +4,7 @@ import {
   Settings, ChevronUp, ChevronDown, Target,
   AlertTriangle, CheckCircle, Loader2,
   FolderOpen, FileText, Upload, ClipboardPaste, Trash2, Type,
+  GitCompare, Palette,
 } from 'lucide-react';
 import type { CompareMode, AppMode, FileWithPath, CropBounds, FilePair, ParallelFileEntry, PageCache, TextVerifyPage } from '../types';
 
@@ -20,6 +21,7 @@ interface SidebarProps {
   setSidebarCollapsed: (v: boolean) => void;
   appMode: AppMode;
   setAppMode: (v: AppMode) => void;
+  initialModeSelect: boolean;
   setInitialModeSelect: (v: boolean) => void;
   transferDiffToParallelView: () => void;
   compareMode: CompareMode;
@@ -91,6 +93,8 @@ const modeAccent: Record<string, { text: string; bg: string; border: string }> =
   'psd-psd': { text: 'text-purple-400', bg: 'bg-[rgba(164,140,196,0.12)]', border: 'border-[rgba(164,140,196,0.20)]' },
   'pdf-pdf': { text: 'text-rose-400', bg: 'bg-[rgba(196,140,156,0.12)]', border: 'border-[rgba(196,140,156,0.20)]' },
   'psd-tiff': { text: 'text-orange-400', bg: 'bg-[rgba(196,164,124,0.12)]', border: 'border-[rgba(196,164,124,0.20)]' },
+  'psd-pdf': { text: 'text-pink-400', bg: 'bg-[rgba(196,124,164,0.12)]', border: 'border-[rgba(196,124,164,0.20)]' },
+  'color-mono': { text: 'text-amber-300', bg: 'bg-[rgba(212,180,108,0.12)]', border: 'border-[rgba(212,180,108,0.20)]' },
   'text-verify': { text: 'text-teal-400', bg: 'bg-[rgba(108,168,168,0.12)]', border: 'border-[rgba(108,168,168,0.20)]' },
 };
 
@@ -101,6 +105,7 @@ export default function Sidebar({
   setSidebarCollapsed,
   appMode,
   setAppMode,
+  initialModeSelect,
   setInitialModeSelect,
   transferDiffToParallelView,
   compareMode,
@@ -173,6 +178,11 @@ export default function Sidebar({
     diff: pairs.filter(p => (p.status === 'done' || p.status === 'checked') && p.hasDiff).length,
     pending: pairs.filter(p => p.status === 'pending' && p.fileA && p.fileB).length
   };
+  const isProcessing = pairs.some(p => {
+    if (p.status === 'loading' || p.status === 'checked' || p.status === 'rendering') return true;
+    if (p.status === 'pending' && p.fileA && p.fileB && (compareMode !== 'psd-tiff' || cropBounds)) return true;
+    return false;
+  });
 
   const currentPair = pairs[selectedIndex];
 
@@ -185,7 +195,7 @@ export default function Sidebar({
   };
 
   return (
-        <div className={`bg-neutral-800 border-r border-white/[0.04] shadow-[2px_0_12px_rgba(0,0,0,0.15)] flex flex-col shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning ? 'w-0 opacity-0 border-r-0' : sidebarCollapsed ? 'w-10 opacity-100' : 'w-72 opacity-100'}`}>
+        <div className={`bg-neutral-800 border-r border-white/[0.04] shadow-[2px_0_12px_rgba(0,0,0,0.15)] flex flex-col shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${isFullscreen || fullscreenTransitioning || initialModeSelect ? 'w-0 opacity-0 border-r-0' : sidebarCollapsed ? 'w-10 opacity-100' : 'w-72 opacity-100'}`}>
           {/* Collapse button */}
           <div className={`flex items-center border-b border-white/[0.04] ${sidebarCollapsed ? 'justify-center p-2' : 'justify-end px-2 py-1'}`}>
             <button
@@ -219,6 +229,7 @@ export default function Sidebar({
                     transferDiffToParallelView();
                   }
                   setAppMode('parallel-view');
+                  setInitialModeSelect(false);
                 }}
                 className={`flex-1 flex items-center justify-center gap-1 py-2 text-xs rounded-md transition-all ${
                   appMode === 'parallel-view'
@@ -245,6 +256,18 @@ export default function Sidebar({
               <button onClick={() => handleModeChange('psd-psd')} className={`flex-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('psd-psd')}`}>PSD</button>
               <button onClick={() => handleModeChange('pdf-pdf')} className={`flex-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('pdf-pdf')}`}>PDF</button>
               <button onClick={() => handleModeChange('psd-tiff')} className={`flex-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('psd-tiff')}`}>混合</button>
+            </div>
+            <div className="flex gap-1 mb-2">
+              <button onClick={() => handleModeChange('psd-pdf')} className={`flex-1 flex items-center justify-center gap-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('psd-pdf')}`} title="PSD と PDF/画像 の差分">
+                <GitCompare size={12} />PSD↔PDF
+              </button>
+              <button
+                onClick={() => handleModeChange('color-mono')}
+                className={`flex-1 flex items-center justify-center gap-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('color-mono')}`}
+                title="カラー原稿(RGB 350dpi)とモノクロ原稿(Grayscale 600dpi)を比較"
+              >
+                <Palette size={12} />カラー/モノクロ
+              </button>
             </div>
             <button onClick={() => handleModeChange('text-verify')} className={`w-full flex items-center justify-center gap-1.5 text-xs py-1.5 rounded-md transition-all mb-3 ${modeButtonClass('text-verify')}`}>
               <Type size={12} />テキスト照合
@@ -442,7 +465,14 @@ export default function Sidebar({
             {stats.diff > 0 && <div className="px-3 py-2 bg-red-900/15 text-xs text-red-400 border-b border-white/[0.04]">差分: {stats.diff}件</div>}
 
             {filteredPairs.map((pair) => (
-              <button key={pair.index} data-index={pair.index} onClick={() => setSelectedIndex(pair.index)} className={`w-full text-left px-3 py-2 border-b border-white/[0.03] transition-colors ${selectedIndex === pair.index ? 'bg-[rgba(107,138,255,0.06)] border-l-2 border-l-action' : 'hover:bg-white/[0.03]'}`}>
+              <button
+                key={pair.index}
+                data-index={pair.index}
+                onClick={() => setSelectedIndex(pair.index)}
+                disabled={isProcessing}
+                title={isProcessing ? '解析中はファイル切替できません' : undefined}
+                className={`w-full text-left px-3 py-2 border-b border-white/[0.03] transition-colors ${selectedIndex === pair.index ? 'bg-[rgba(107,138,255,0.06)] border-l-2 border-l-action' : 'hover:bg-white/[0.03]'} ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
                 <div className="flex items-center justify-between mb-0.5">
                   <div className="flex items-center gap-1 flex-1 min-w-0 mr-2">
                     <span className="text-blue-400 text-[10px] shrink-0">A:</span>

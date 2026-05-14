@@ -1,6 +1,6 @@
 // ============== 型定義 ==============
 
-export type CompareMode = 'tiff-tiff' | 'psd-psd' | 'pdf-pdf' | 'psd-tiff' | 'text-verify';
+export type CompareMode = 'tiff-tiff' | 'psd-psd' | 'pdf-pdf' | 'psd-tiff' | 'psd-pdf' | 'color-mono' | 'text-verify';
 export type AppMode = 'diff-check' | 'parallel-view';
 export type ViewMode = 'A' | 'B' | 'diff' | 'A-full';
 
@@ -43,6 +43,8 @@ export interface FilePair {
   markers?: DiffMarker[];
   imageWidth?: number;
   imageHeight?: number;
+  // psd-pdf モードで B 側が多ページPDF のとき、このペアが指す PDF ページ (0-indexed)
+  pdfPage?: number;
 }
 
 export interface PageCache {

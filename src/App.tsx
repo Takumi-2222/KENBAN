@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle, AlertTriangle, Loader2, RefreshCw, Download } from 'lucide-react';
+import { CheckCircle, AlertTriangle, Loader2, RefreshCw, Download, Home } from 'lucide-react';
 import { pdfCache, checkPdfFileSize, globalOptimizeProgress, setOptimizeProgressCallback, LRUCache, getOptimalPdfUrlCacheSize, nextFrame } from './utils/pdf';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { readFile as tauriReadFile, readDir } from '@tauri-apps/plugin-fs';
@@ -53,6 +53,13 @@ export default function MangaDiffDetector() {
   const [showHelp, setShowHelp] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true); // デフォルトで折りたたみ
+  // psd-pdf モードの描画位置調整（縮尺=描画位置合わせ）
+  const [psdPdfOffsetX, setPsdPdfOffsetX] = useState(0);
+  const [psdPdfOffsetY, setPsdPdfOffsetY] = useState(0);
+  const [psdPdfScale, setPsdPdfScale] = useState(1.0);
+  // 'ref' = PDF/画像を基準にしてPSDを動かす（既定） / 'psd' = PSDを基準にしてPDF/画像を動かす
+  const [psdPdfAnchor, setPsdPdfAnchor] = useState<'ref' | 'psd'>('ref');
+  const [autoAligning, setAutoAligning] = useState(false);
   const [easterEgg, setEasterEgg] = useState(false);
   const easterEggBufferRef = useRef('');
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
@@ -79,6 +86,7 @@ export default function MangaDiffDetector() {
   const [showPsSelectPopup, setShowPsSelectPopup] = useState(false); // Photoshop選択ポップアップ
   const [showMojiQSelectPopup, setShowMojiQSelectPopup] = useState(false); // MojiQ選択ポップアップ（並列ビューワー用）
   const [showFolderSelectPopup, setShowFolderSelectPopup] = useState(false); // フォルダ選択ポップアップ（並列ビューワー用）
+  const [showHomeConfirm, setShowHomeConfirm] = useState(false); // ホーム遷移確認ダイアログ
 
   useEffect(() => {
     const savedPath = window.localStorage.getItem('photoshopExecutablePath');
@@ -180,6 +188,12 @@ export default function MangaDiffDetector() {
   const compareModeRef = useRef(compareMode); // モード変更を追跡
   const parallelDragStartRefA = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const parallelDragStartRefB = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  // PDF全ページ一括解析用: 動的優先順位付けで最新値を参照する
+  const currentPageRef = useRef(1);
+  const diffCacheRef = useRef<Record<string, PageCache>>({});
+  const selectedIndexRef = useRef(0);
+  // 重複IPC防止用: 現在計算中の cacheKey 集合
+  const inFlightPagesRef = useRef<Set<string>>(new Set());
 
   // モード切り替え関数（即座にペアをクリアして誤った処理を防ぐ）
   const handleModeChange = useCallback((newMode: CompareMode) => {
@@ -503,6 +517,8 @@ export default function MangaDiffDetector() {
       case 'psd-psd': return ['.psd'];
       case 'pdf-pdf': return ['.pdf'];
       case 'psd-tiff': return side === 'A' ? ['.psd'] : ['.tif', '.tiff', '.jpg', '.jpeg'];
+      case 'psd-pdf': return side === 'A' ? ['.psd'] : ['.pdf', '.tif', '.tiff', '.jpg', '.jpeg', '.png'];
+      case 'color-mono': return ['.psd', '.tif', '.tiff', '.jpg', '.jpeg', '.png'];
       default: return [];
     }
   }, [compareMode]);
@@ -638,6 +654,8 @@ export default function MangaDiffDetector() {
       case 'psd-psd': return { a: 'PSD (元)', b: 'PSD (修正)', accept: '.psd' };
       case 'pdf-pdf': return { a: 'PDF (元)', b: 'PDF (修正)', accept: '.pdf' };
       case 'psd-tiff': return { a: 'PSD (元)', b: 'TIFF (出力)', accept: { a: '.psd', b: '.tif,.tiff' } };
+      case 'psd-pdf': return { a: 'PSD (元)', b: 'PDF/画像 (出力)', accept: { a: '.psd', b: '.pdf,.tif,.tiff,.jpg,.jpeg,.png' } };
+      case 'color-mono': return { a: 'カラー (RGB 350dpi)', b: 'モノクロ (Grayscale 600dpi)', accept: '.psd,.tif,.tiff,.jpg,.jpeg,.png' };
       default: return { a: 'A', b: 'B', accept: '*' };
     }
   };
@@ -1336,7 +1354,10 @@ export default function MangaDiffDetector() {
   }, [parallelIndexA, parallelIndexB, parallelSyncMode, parallelActivePanel]);
 
   // ペア処理
-  const processPair = useCallback(async (index: number) => {
+  const processPair = useCallback(async (
+    index: number,
+    psdPdfOverride?: { scale: number; offsetX: number; offsetY: number; anchor: 'ref' | 'psd' }
+  ) => {
     const pair = pairs[index];
     if (!pair || !pair.fileA || !pair.fileB) return;
     if (compareMode === 'psd-tiff' && !cropBounds) return;
@@ -1382,6 +1403,89 @@ export default function MangaDiffDetector() {
           };
           return next;
         });
+      } else if (compareMode === 'psd-pdf') {
+        // PSD vs PDF/画像 — Rust側で描画位置合わせ＋ヒートマップ差分を一括処理
+        // 多ページPDFは expansion useEffect で1ページ1ペアに展開済み。pair.pdfPage を参照。
+        const psdPath = (pair.fileA as FileWithPath).filePath!;
+        const refPath = (pair.fileB as FileWithPath).filePath!;
+        const pageToRender = pair.pdfPage ?? 0;
+        const scale = psdPdfOverride?.scale ?? psdPdfScale;
+        const offsetX = psdPdfOverride?.offsetX ?? psdPdfOffsetX;
+        const offsetY = psdPdfOverride?.offsetY ?? psdPdfOffsetY;
+        const anchor = psdPdfOverride?.anchor ?? psdPdfAnchor;
+
+        const result = await invoke<{
+          src_a: string; src_b: string; processed_a: string; diff_src: string;
+          has_diff: boolean; diff_probability: number; high_density_count: number;
+          markers: DiffMarker[]; image_width: number; image_height: number;
+        }>('compute_diff_psd_pdf', {
+          psdPath,
+          refPath,
+          threshold: 70,
+          scale,
+          offsetX,
+          offsetY,
+          anchor,
+          page: pageToRender,
+          diffStyle: 'heatmap',
+        });
+        if (compareModeRef.current !== startMode) return;
+
+        const srcA = convertFileSrc(result.src_a);
+        const srcB = convertFileSrc(result.src_b);
+        const processedA = convertFileSrc(result.processed_a);
+        const diffSrc = convertFileSrc(result.diff_src);
+        const diffSrcWithMarkers = await drawMarkersOnImage(diffSrc, result.markers, 'heatmap');
+        if (compareModeRef.current !== startMode) return;
+
+        setPairs(prev => {
+          const next = [...prev];
+          next[index] = { ...next[index],
+            srcA, srcB,
+            processedA, processedB: srcB,
+            diffSrc, diffSrcWithMarkers,
+            hasDiff: result.has_diff, diffProbability: result.diff_probability,
+            markers: result.markers, imageWidth: result.image_width, imageHeight: result.image_height,
+            totalPages: 1,
+            status: 'done'
+          };
+          return next;
+        });
+      } else if (compareMode === 'color-mono') {
+        // カラー(A=RGB350dpi) × モノクロ(B=Grayscale600dpi) — ヒートマップ + モノクロ濃部マスク方式
+        // 内部比較ではグレースケール化するが、表示は常にオリジナルのカラー/モノクロをそのまま見せる
+        const result = await invoke<{
+          src_a: string; src_b: string; processed_a: string; diff_src: string;
+          has_diff: boolean; diff_probability: number; high_density_count: number;
+          markers: DiffMarker[]; image_width: number; image_height: number;
+        }>('compute_diff_color_mono', {
+          pathA: (pair.fileA as FileWithPath).filePath,
+          pathB: (pair.fileB as FileWithPath).filePath,
+          threshold: 30,
+          darkThreshold: 200
+        });
+        if (compareModeRef.current !== startMode) return;
+
+        const srcA = convertFileSrc(result.src_a);
+        const srcB = convertFileSrc(result.src_b);
+        const diffSrc = convertFileSrc(result.diff_src);
+        const diffSrcWithMarkers = await drawMarkersOnImage(diffSrc, result.markers, 'heatmap');
+        if (compareModeRef.current !== startMode) return;
+
+        setPairs(prev => {
+          const next = [...prev];
+          next[index] = { ...next[index],
+            srcA, srcB,
+            // A表示はカラーのまま、B表示はモノクロのまま (グレースケール変換は差分計算用に内部でのみ実施)
+            processedA: srcA, processedB: srcB,
+            diffSrc, diffSrcWithMarkers,
+            hasDiff: result.has_diff, diffProbability: result.diff_probability,
+            markers: result.markers, imageWidth: result.image_width, imageHeight: result.image_height,
+            status: 'done'
+          };
+          return next;
+        });
+        return;
       } else if (compareMode === 'pdf-pdf') {
         // Rust PDFiumパイプライン: PDFの差分計算をRust側で一括処理
         const pathA = (pair.fileA as FileWithPath).filePath!;
@@ -1494,7 +1598,7 @@ export default function MangaDiffDetector() {
         return next;
       });
     }
-  }, [pairs, compareMode, cropBounds]);
+  }, [pairs, compareMode, cropBounds, psdPdfScale, psdPdfOffsetX, psdPdfOffsetY, psdPdfAnchor]);
 
   // Phase1: 軽量差分チェック（画像エンコードなし）
   const checkPair = useCallback(async (index: number) => {
@@ -1531,6 +1635,55 @@ export default function MangaDiffDetector() {
           };
           return next;
         });
+      } else if (compareMode === 'psd-pdf') {
+        const result = await invoke<{
+          has_diff: boolean; diff_probability: number; high_density_count: number;
+          markers: DiffMarker[]; image_width: number; image_height: number;
+        }>('check_diff_psd_pdf', {
+          psdPath: (pair.fileA as FileWithPath).filePath,
+          refPath: (pair.fileB as FileWithPath).filePath,
+          threshold: 70,
+          scale: psdPdfScale,
+          offsetX: psdPdfOffsetX,
+          offsetY: psdPdfOffsetY,
+          anchor: psdPdfAnchor,
+          page: pair.pdfPage ?? 0,
+          diffStyle: 'heatmap',
+        });
+        if (compareModeRef.current !== startMode) return;
+
+        setPairs(prev => {
+          const next = [...prev];
+          next[index] = { ...next[index],
+            hasDiff: result.has_diff, diffProbability: result.diff_probability,
+            markers: result.markers, imageWidth: result.image_width, imageHeight: result.image_height,
+            status: 'checked'
+          };
+          return next;
+        });
+      } else if (compareMode === 'color-mono') {
+        // カラー/モノクロ軽量チェック
+        const result = await invoke<{
+          has_diff: boolean; diff_probability: number; high_density_count: number;
+          markers: DiffMarker[]; image_width: number; image_height: number;
+        }>('check_diff_color_mono', {
+          pathA: (pair.fileA as FileWithPath).filePath,
+          pathB: (pair.fileB as FileWithPath).filePath,
+          threshold: 30,
+          darkThreshold: 200
+        });
+        if (compareModeRef.current !== startMode) return;
+
+        setPairs(prev => {
+          const next = [...prev];
+          next[index] = { ...next[index],
+            hasDiff: result.has_diff, diffProbability: result.diff_probability,
+            markers: result.markers, imageWidth: result.image_width, imageHeight: result.image_height,
+            status: 'checked'
+          };
+          return next;
+        });
+        return;
       } else {
         // tiff-tiff / psd-psd
         const result = await invoke<{
@@ -1563,11 +1716,225 @@ export default function MangaDiffDetector() {
         return next;
       });
     }
-  }, [pairs, compareMode, cropBounds]);
+  }, [pairs, compareMode, cropBounds, psdPdfScale, psdPdfOffsetX, psdPdfOffsetY, psdPdfAnchor]);
+
+  // psd-pdf: B側に多ページPDFが1ファイルだけある場合、PDFページごとのペアに展開
+  // 例) PSDが5枚 + PDF(8ページ) → 5ペア (PSD#i ↔ PDF page i)
+  //     PSDが1枚 + PDF(8ページ) → 8ペア (同じPSD ↔ PDF page 0..7)
+  //     PSDが5枚 + PDF(1ページ) → 既存ロジックのまま（展開不要）
+  const psdPdfExpandedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (compareMode !== 'psd-pdf') {
+      psdPdfExpandedKeyRef.current = null;
+      return;
+    }
+    if (filesB.length !== 1) return;
+    const refFile = filesB[0] as FileWithPath;
+    if (!refFile?.name?.toLowerCase().endsWith('.pdf')) return;
+    const refPath = refFile.filePath;
+    if (!refPath) return;
+    if (filesA.length === 0) return;
+
+    // 重複実行ガード（同じ入力で再展開しない）
+    const sig = `${filesA.length}|${refPath}`;
+    if (psdPdfExpandedKeyRef.current === sig) return;
+
+    (async () => {
+      let pageCount = 1;
+      try {
+        pageCount = await invoke<number>('get_pdf_page_count', { path: refPath });
+      } catch (e) {
+        console.warn('[psd-pdf] PDF page count failed for expansion:', e);
+        return;
+      }
+      if (pageCount <= 1) {
+        psdPdfExpandedKeyRef.current = sig;
+        return;
+      }
+      const N = filesA.length;
+      const M = pageCount;
+      let pairCount: number;
+      if (N === 1) pairCount = M;
+      else if (M === 1) pairCount = N;
+      else pairCount = Math.min(N, M);
+
+      const refBase = refFile.name.replace(/\.pdf$/i, '');
+      const expanded: FilePair[] = [];
+      for (let i = 0; i < pairCount; i++) {
+        const psdFile = filesA[N === 1 ? 0 : i];
+        expanded.push({
+          index: i,
+          fileA: psdFile,
+          fileB: refFile,
+          nameA: psdFile.name,
+          nameB: `${refBase} P.${i + 1}`,
+          srcA: null, srcB: null, processedA: null, processedB: null,
+          diffSrc: null, hasDiff: false, diffProbability: 0,
+          totalPages: 1, status: 'pending',
+          pdfPage: i,
+        });
+      }
+      setPairs(expanded);
+      setDiffCache({});
+      setSelectedIndex(0);
+      psdPdfExpandedKeyRef.current = sig;
+      console.log('[psd-pdf] expanded into', pairCount, 'pairs from', N, 'PSDs ×', M, 'pages');
+    })();
+  }, [compareMode, filesA, filesB]);
+
+  // psd-pdf 描画位置調整 → 全ペアを invalidate して再処理
+  const applyPsdPdfAlignment = useCallback(() => {
+    if (compareMode !== 'psd-pdf') return;
+    const pair = pairs[selectedIndex];
+    if (!pair || !pair.fileA || !pair.fileB) return;
+    setPairs(prev => prev.map(p => ({
+      ...p,
+      status: 'pending' as const,
+      srcA: null, srcB: null, processedA: null, processedB: null,
+      diffSrc: null, diffSrcWithMarkers: null,
+    })));
+    setDiffCache({});
+  }, [compareMode, pairs, selectedIndex]);
+
+  // psd-pdf: 全ペアを強制的に逐次処理する（カスケード useEffect の保険）
+  const processAllPsdPdfRef = useRef(false);
+  const processPairLatestRef = useRef<typeof processPair>(processPair);
+  useEffect(() => { processPairLatestRef.current = processPair; }, [processPair]);
+
+  const processAllPsdPdf = useCallback(async () => {
+    if (compareMode !== 'psd-pdf') return;
+    if (processAllPsdPdfRef.current) return;
+    processAllPsdPdfRef.current = true;
+    processingRef.current = true;
+    try {
+      setPairs(prev => prev.map(p => ({
+        ...p,
+        status: 'pending' as const,
+        srcA: null, srcB: null, processedA: null, processedB: null,
+        diffSrc: null, diffSrcWithMarkers: null,
+      })));
+      setDiffCache({});
+      await new Promise<void>(r => setTimeout(r, 0));
+
+      const order: number[] = [];
+      const N = pairs.length;
+      if (selectedIndex >= 0 && selectedIndex < N) order.push(selectedIndex);
+      for (let i = 0; i < N; i++) {
+        if (i !== selectedIndex) order.push(i);
+      }
+
+      for (const idx of order) {
+        if (compareModeRef.current !== 'psd-pdf') break;
+        try {
+          await processPairLatestRef.current(idx);
+        } catch (e) {
+          console.error('[psd-pdf] processAllPsdPdf error at idx', idx, e);
+        }
+      }
+    } finally {
+      processingRef.current = false;
+      processAllPsdPdfRef.current = false;
+    }
+  }, [compareMode, pairs, selectedIndex]);
+
+  // psd-pdf 自動位置合わせ — 最小差分の縮尺/位置を探し、それを正式な差分として採用
+  const autoAlignPsdPdf = useCallback(async () => {
+    if (compareMode !== 'psd-pdf') return;
+    const pair = pairs[selectedIndex];
+    if (!pair || !pair.fileA || !pair.fileB) return;
+    const startMode = compareMode;
+    setAutoAligning(true);
+    setPairs(prev => prev.map((p, i) => {
+      if (i === selectedIndex) return { ...p, status: 'rendering' as const };
+      return {
+        ...p,
+        status: 'pending' as const,
+        srcA: null, srcB: null, processedA: null, processedB: null,
+        diffSrc: null, diffSrcWithMarkers: null,
+      };
+    }));
+    setDiffCache({});
+    try {
+      const result = await invoke<{
+        best_scale: number; best_offset_x: number; best_offset_y: number;
+        src_a: string; src_b: string; processed_a: string; diff_src: string;
+        has_diff: boolean; diff_probability: number; high_density_count: number;
+        markers: DiffMarker[]; image_width: number; image_height: number;
+      }>('auto_align_psd_pdf', {
+        psdPath: (pair.fileA as FileWithPath).filePath,
+        refPath: (pair.fileB as FileWithPath).filePath,
+        threshold: 70,
+        anchor: psdPdfAnchor,
+        page: pair.pdfPage ?? 0,
+        diffStyle: 'heatmap',
+      });
+      if (compareModeRef.current !== startMode) return;
+
+      setPsdPdfScale(result.best_scale);
+      setPsdPdfOffsetX(0);
+      setPsdPdfOffsetY(0);
+
+      const srcA = convertFileSrc(result.src_a);
+      const srcB = convertFileSrc(result.src_b);
+      const processedA = convertFileSrc(result.processed_a);
+      const diffSrc = convertFileSrc(result.diff_src);
+      const diffSrcWithMarkers = await drawMarkersOnImage(diffSrc, result.markers, 'heatmap');
+      if (compareModeRef.current !== startMode) return;
+
+      setPairs(prev => {
+        const next = [...prev];
+        next[selectedIndex] = { ...next[selectedIndex],
+          srcA, srcB,
+          processedA, processedB: srcB,
+          diffSrc, diffSrcWithMarkers,
+          hasDiff: result.has_diff, diffProbability: result.diff_probability,
+          markers: result.markers,
+          imageWidth: result.image_width, imageHeight: result.image_height,
+          status: 'done'
+        };
+        return next;
+      });
+
+      const alignment = {
+        scale: result.best_scale,
+        offsetX: 0,
+        offsetY: 0,
+        anchor: psdPdfAnchor,
+      };
+      for (let i = 0; i < pairs.length; i++) {
+        if (i === selectedIndex) continue;
+        if (compareModeRef.current !== startMode) break;
+        const targetPair = pairs[i];
+        if (!targetPair?.fileA || !targetPair.fileB) continue;
+        await processPairLatestRef.current(i, alignment);
+      }
+    } catch (err: any) {
+      if (compareModeRef.current !== startMode) return;
+      const errorMessage = typeof err === 'string' ? err : err?.message || String(err);
+      console.error("Auto-align error:", errorMessage);
+      setPairs(prev => {
+        const next = [...prev];
+        next[selectedIndex] = { ...next[selectedIndex], status: 'error', errorMessage };
+        return next;
+      });
+    } finally {
+      setAutoAligning(false);
+    }
+  }, [compareMode, pairs, selectedIndex, psdPdfAnchor]);
+
+  // psd-pdf モード初回 / モード切替時に位置パラメータをリセット
+  useEffect(() => {
+    if (compareMode !== 'psd-pdf') return;
+    setPsdPdfScale(1.0);
+    setPsdPdfOffsetX(0);
+    setPsdPdfOffsetY(0);
+    setPsdPdfAnchor('ref');
+  }, [compareMode]);
 
   // 自動処理
   useEffect(() => {
     if (processingRef.current) return;
+    if (autoAligning) return; // auto-align 実行中は他ペアの並行 processPair をブロック
 
     if (compareMode === 'pdf-pdf') {
       // PDF-PDFは従来通り逐次フルレンダー
@@ -1575,6 +1942,26 @@ export default function MangaDiffDetector() {
       if (pendingIndex >= 0) {
         processingRef.current = true;
         processPair(pendingIndex).finally(() => { processingRef.current = false; });
+      }
+    } else if (compareMode === 'psd-pdf') {
+      // psd-pdf は Phase 1 (checkPair) の計算が Phase 2 (processPair) と実質同じなのでスキップして
+      // 直接フルレンダー。選択中ペアを最優先に処理して、ユーザーがすぐ結果を確認できるようにする。
+      const selected = pairs[selectedIndex];
+      const pendingIndexes = pairs
+        .map((p, i) => ({ pair: p, index: i }))
+        .filter(({ pair }) => pair.status === 'pending' && pair.fileA && pair.fileB)
+        .map(({ index }) => index);
+      if (pendingIndexes.length > 0) {
+        processingRef.current = true;
+        const orderedIndexes = selected?.status === 'pending' && pendingIndexes.includes(selectedIndex)
+          ? [selectedIndex, ...pendingIndexes.filter(i => i !== selectedIndex)]
+          : pendingIndexes;
+        (async () => {
+          for (const idx of orderedIndexes) {
+            if (compareModeRef.current !== 'psd-pdf') break;
+            await processPair(idx);
+          }
+        })().finally(() => { processingRef.current = false; });
       }
     } else {
       // TIFF/PSD系: Phase1軽量チェックを最大4件並列実行
@@ -1589,106 +1976,69 @@ export default function MangaDiffDetector() {
           .finally(() => { processingRef.current = false; });
       }
     }
-  }, [pairs, processPair, checkPair, compareMode, cropBounds]);
+  }, [pairs, processPair, checkPair, compareMode, cropBounds, selectedIndex, autoAligning]);
 
-  // Phase2: checked状態のペアが選択されたらフルレンダー
-  const renderingIndexRef = useRef<number | null>(null);
+  // Phase2 一括処理: checked 状態のペアを最大4件並列でレンダー（選択中ペア優先）
+  const phase2BatchRef = useRef(false);
   useEffect(() => {
     if (compareMode === 'pdf-pdf') return;
-    const pair = pairs[selectedIndex];
-    if (!pair || pair.status !== 'checked') return;
-    if (renderingIndexRef.current === selectedIndex) return; // 既にレンダー中
+    if (phase2BatchRef.current) return;
 
-    renderingIndexRef.current = selectedIndex;
+    const checkedPairs = pairs
+      .map((p, i) => ({ pair: p, index: i }))
+      .filter(({ pair }) => pair.status === 'checked');
+    if (checkedPairs.length === 0) return;
+
+    // 選択中のペアを最優先 → 以降は index 順
+    checkedPairs.sort((a, b) => {
+      if (a.index === selectedIndex) return -1;
+      if (b.index === selectedIndex) return 1;
+      return a.index - b.index;
+    });
+
+    phase2BatchRef.current = true;
+    const currentMode = compareMode;
+    const batch = checkedPairs.slice(0, 4); // 最大4並列（Phase1と同じ並列度）
+
     setPairs(prev => {
       const next = [...prev];
-      next[selectedIndex] = { ...next[selectedIndex], status: 'rendering' };
+      for (const { index } of batch) {
+        if (next[index]?.status === 'checked') {
+          next[index] = { ...next[index], status: 'rendering' };
+        }
+      }
       return next;
     });
-    processPair(selectedIndex).finally(() => {
-      renderingIndexRef.current = null;
+    Promise.all(batch.map(({ index }) => processPair(index))).finally(() => {
+      if (compareModeRef.current === currentMode) {
+        phase2BatchRef.current = false;
+      }
     });
-  }, [selectedIndex, pairs, compareMode, processPair]);
+  }, [pairs, compareMode, processPair, selectedIndex]);
 
-  // Phase2 プリフェッチ: 選択ペアがdoneになったら前後のcheckedペアを先読み
-  const prefetchSelectedRef = useRef<number | null>(null);
+  // ref を最新値に同期（calculateAllPages の while ループ内で参照される）
+  useEffect(() => { currentPageRef.current = currentPage; }, [currentPage]);
+  useEffect(() => { diffCacheRef.current = diffCache; }, [diffCache]);
+  useEffect(() => { selectedIndexRef.current = selectedIndex; }, [selectedIndex]);
+
+  // PDFページ切り替え: 解析は calculateAllPages に一任し、ここではキャッシュ判定のみ
   useEffect(() => {
-    if (compareMode === 'pdf-pdf') return;
-    const pair = pairs[selectedIndex];
-    if (!pair || pair.status !== 'done') return;
-    if (prefetchSelectedRef.current === selectedIndex) return;
-
-    prefetchSelectedRef.current = selectedIndex;
-    const currentMode = compareMode;
-
-    const prefetchOrder = [
-      selectedIndex + 1, selectedIndex - 1,
-      selectedIndex + 2, selectedIndex - 2,
-    ];
-
-    (async () => {
-      for (const idx of prefetchOrder) {
-        if (compareModeRef.current !== currentMode) break;
-        if (prefetchSelectedRef.current !== selectedIndex) break;
-
-        if (idx < 0 || idx >= pairs.length) continue;
-        const p = pairs[idx];
-        if (!p || p.status !== 'checked') continue;
-
-        await processPair(idx);
-      }
-    })();
-  }, [selectedIndex, pairs, compareMode, processPair]);
-
-  // PDFページ切り替え
-  useEffect(() => {
-    if (compareMode !== 'pdf-pdf') return;
-    const pair = pairs[selectedIndex];
-    if (!pair || pair.status !== 'done') return;
-
-    const cacheKey = `${selectedIndex}-${currentPage}`;
-    if (diffCache[cacheKey]) return;
-
-    pdfCache.prioritizePage(pair.fileA!, pair.fileB!, currentPage, pair.totalPages);
-
-    const loadPage = async () => {
-      setIsLoadingPage(true);
-      setPdfComputingPages(prev => new Set(prev).add(cacheKey));
-      try {
-        const pathA = (pair.fileA as FileWithPath).filePath!;
-        const pathB = (pair.fileB as FileWithPath).filePath!;
-
-        // Rust PDFiumパイプラインで差分計算
-        const result = await invoke<{
-          src_a: string; src_b: string; diff_src: string;
-          has_diff: boolean; diff_count: number;
-          markers: DiffMarker[]; image_width: number; image_height: number;
-        }>('compute_pdf_diff', {
-          pathA, pathB, page: currentPage - 1, dpi: 300.0, threshold: 5
-        });
-
-        const srcA = convertFileSrc(result.src_a);
-        const srcB = convertFileSrc(result.src_b);
-        const diffSrc = convertFileSrc(result.diff_src);
-        const diffSrcWithMarkers = await drawMarkersOnImage(diffSrc, result.markers, 'simple');
-
-        setDiffCache(prev => ({
-          ...prev,
-          [cacheKey]: {
-            srcA, srcB,
-            diffSrc, diffSrcWithMarkers,
-            hasDiff: result.has_diff, markers: result.markers,
-            imageWidth: result.image_width, imageHeight: result.image_height
-          }
-        }));
-      } catch (err) {
-        console.error("Page load error:", err);
-      }
-      setPdfComputingPages(prev => { const next = new Set(prev); next.delete(cacheKey); return next; });
+    if (compareMode !== 'pdf-pdf') {
       setIsLoadingPage(false);
-    };
+      return;
+    }
+    const pair = pairs[selectedIndex];
+    if (!pair || pair.status !== 'done') {
+      setIsLoadingPage(false);
+      return;
+    }
+    const cacheKey = `${selectedIndex}-${currentPage}`;
+    setIsLoadingPage(!diffCache[cacheKey]);
 
-    loadPage();
+    // PDF素材バイナリ側の先読み優先度は引き続き上げる（差分解析自体はトリガーしない）
+    if (pair.fileA && pair.fileB && pair.totalPages) {
+      pdfCache.prioritizePage(pair.fileA, pair.fileB, currentPage, pair.totalPages);
+    }
   }, [currentPage, selectedIndex, pairs, compareMode, diffCache]);
 
   // PDF全ページの差分を一斉計算（バックグラウンド、進捗バー付き、キャンセル可能）
@@ -1704,56 +2054,69 @@ export default function MangaDiffDetector() {
     pdfDiffAbortRef.current = ac;
 
     const calculateAllPages = async () => {
-      // 現在ページの前後3ページを優先、残りはアイドル時に順次処理
-      const priorityPages: number[] = [];
-      for (let offset = 0; offset <= 3; offset++) {
-        if (currentPage + offset <= pair.totalPages!) priorityPages.push(currentPage + offset);
-        if (offset > 0 && currentPage - offset >= 1) priorityPages.push(currentPage - offset);
-      }
-      const remainingPages = Array.from({ length: pair.totalPages! }, (_, i) => i + 1)
-        .filter(p => !priorityPages.includes(p));
-      const pageOrder = [...priorityPages, ...remainingPages];
-
       const pathA = (pair.fileA as FileWithPath).filePath!;
       const pathB = (pair.fileB as FileWithPath).filePath!;
       const fileLabel = pair.fileA?.name || pair.fileB?.name || 'PDF';
       const totalPages = pair.totalPages!;
+      const targetIndex = selectedIndex; // このジョブが担当するペアindex
 
+      // 既にキャッシュされているページ数を初期完了数に反映
       let completed = 0;
-      // 初期進捗（既にキャッシュ済みのページ数を反映）
-      for (const p of pageOrder) {
-        if (diffCache[`${selectedIndex}-${p}`]) completed++;
+      for (let p = 1; p <= totalPages; p++) {
+        if (diffCacheRef.current[`${targetIndex}-${p}`]) completed++;
       }
       if (globalOptimizeProgress && completed < totalPages) {
         globalOptimizeProgress(fileLabel, 'PDF差分を計算中...', completed, totalPages);
       }
 
-      for (const page of pageOrder) {
-        if (ac.signal.aborted) return;
-        const cacheKey = `${selectedIndex}-${page}`;
-        if (diffCache[cacheKey]) continue;
+      // 各反復で「現在ページに最も近い、未キャッシュ・未処理中のページ」を選んで処理する。
+      // currentPageRef を毎回参照するため、ユーザがページを移動するとリアルタイムに優先順位が変わる。
+      while (!ac.signal.aborted) {
+        const cur = currentPageRef.current;
+        let nextPage = -1;
+        for (let offset = 0; offset < totalPages; offset++) {
+          const candidates = offset === 0 ? [cur] : [cur + offset, cur - offset];
+          for (const c of candidates) {
+            if (c < 1 || c > totalPages) continue;
+            const key = `${targetIndex}-${c}`;
+            if (diffCacheRef.current[key]) continue;
+            // 他で処理中のページもスキップ（重複IPC防止）
+            if (inFlightPagesRef.current.has(key)) continue;
+            nextPage = c;
+            break;
+          }
+          if (nextPage > 0) break;
+        }
+        if (nextPage < 0) break; // 全ページキャッシュ済み or 全て処理中
 
+        const cacheKey = `${targetIndex}-${nextPage}`;
+        inFlightPagesRef.current.add(cacheKey);
         setPdfComputingPages(prev => new Set(prev).add(cacheKey));
         try {
-          // Rust PDFiumパイプラインで差分計算
           const result = await invoke<{
             src_a: string; src_b: string; diff_src: string;
             has_diff: boolean; diff_count: number;
             markers: DiffMarker[]; image_width: number; image_height: number;
           }>('compute_pdf_diff', {
-            pathA, pathB, page: page - 1, dpi: 300.0, threshold: 5
+            pathA, pathB, page: nextPage - 1, dpi: 300.0, threshold: 5
           });
-          if (ac.signal.aborted) return;
+          if (ac.signal.aborted) {
+            inFlightPagesRef.current.delete(cacheKey);
+            return;
+          }
 
           const srcA = convertFileSrc(result.src_a);
           const srcB = convertFileSrc(result.src_b);
           const diffSrc = convertFileSrc(result.diff_src);
           const diffSrcWithMarkers = await drawMarkersOnImage(diffSrc, result.markers, 'simple');
-          if (ac.signal.aborted) return;
+          if (ac.signal.aborted) {
+            inFlightPagesRef.current.delete(cacheKey);
+            return;
+          }
 
           setDiffCache(prev => {
             if (prev[cacheKey]) return prev;
-            return {
+            const next = {
               ...prev,
               [cacheKey]: {
                 srcA, srcB,
@@ -1762,19 +2125,21 @@ export default function MangaDiffDetector() {
                 imageWidth: result.image_width, imageHeight: result.image_height
               }
             };
+            diffCacheRef.current = next; // 次反復が即座に最新を見えるように同期更新
+            return next;
           });
-          setPdfComputingPages(prev => { const next = new Set(prev); next.delete(cacheKey); return next; });
-
           completed++;
           if (globalOptimizeProgress) {
             globalOptimizeProgress(fileLabel, 'PDF差分を計算中...', completed, totalPages);
           }
-
-          // ページ間で少し待機してGCの機会を与える
-          await new Promise(r => setTimeout(r, 50));
         } catch (err) {
-          if (ac.signal.aborted) return;
-          console.error(`Page ${page} diff calculation error:`, err);
+          if (ac.signal.aborted) {
+            inFlightPagesRef.current.delete(cacheKey);
+            return;
+          }
+          console.error(`Page ${nextPage} diff calculation error:`, err);
+        } finally {
+          inFlightPagesRef.current.delete(cacheKey);
           setPdfComputingPages(prev => { const next = new Set(prev); next.delete(cacheKey); return next; });
         }
       }
@@ -3330,6 +3695,7 @@ export default function MangaDiffDetector() {
         if (appMode === 'diff-check') {
           transferDiffToParallelView();
           setAppMode('parallel-view');
+          setInitialModeSelect(false);
         } else if (appMode === 'parallel-view') {
           setAppMode('diff-check');
           setInitialModeSelect(false);
@@ -3595,6 +3961,16 @@ export default function MangaDiffDetector() {
         e.preventDefault();
         setViewMode(prev => prev === 'diff' ? 'A' : prev === 'A' ? 'B' : 'A');
       }
+      // 解析中はページ移動系をブロック（フル解析完了 = done まで）
+      const isProcessing = pairs.some(p => {
+        if (p.status === 'loading' || p.status === 'checked' || p.status === 'rendering') return true;
+        if (p.status === 'pending' && p.fileA && p.fileB && (compareMode !== 'psd-tiff' || cropBounds)) return true;
+        return false;
+      });
+      if (isProcessing && (e.code === 'KeyJ' || e.code === 'KeyK' || e.code === 'ArrowDown' || e.code === 'ArrowUp')) {
+        e.preventDefault();
+        return;
+      }
       // J/K: 差分ファイルのみナビゲーション
       if (e.code === 'KeyJ' && compareMode !== 'text-verify') { e.preventDefault(); goNextDiffFile(); return; }
       if (e.code === 'KeyK' && compareMode !== 'text-verify') { e.preventDefault(); goPrevDiffFile(); return; }
@@ -3745,6 +4121,19 @@ export default function MangaDiffDetector() {
     setTextVerifyMemoRaw('');
   }, []);
 
+  const requestHome = useCallback(() => {
+    setShowHomeConfirm(true);
+  }, []);
+
+  const confirmHome = useCallback(() => {
+    setShowHomeConfirm(false);
+    handleReset();
+  }, [handleReset]);
+
+  const cancelHome = useCallback(() => {
+    setShowHomeConfirm(false);
+  }, []);
+
   const handleClear = useCallback(() => {
     setFilesA([]);
     setFilesB([]);
@@ -3754,8 +4143,52 @@ export default function MangaDiffDetector() {
     pdfCache.clear();
   }, []);
 
+  const diffDetectionState = useMemo(() => {
+    if (appMode !== 'diff-check' || compareMode === 'text-verify') return null;
+    // 解析対象（両側ファイル + 必要なら cropBounds）
+    const total = pairs.filter(p =>
+      !!p.fileA && !!p.fileB && (compareMode !== 'psd-tiff' || !!cropBounds)
+    ).length;
+    if (total === 0) return null;
+    // フル解析完了済み（done または error）
+    const done = pairs.filter(p => p.status === 'done' || p.status === 'error').length;
+    // 解析中: 解析待ち / loading / checked / rendering のいずれかがある
+    const isDetecting = pairs.some(p =>
+      p.status === 'loading' ||
+      p.status === 'checked' ||
+      p.status === 'rendering' ||
+      (p.status === 'pending' && !!p.fileA && !!p.fileB && (compareMode !== 'psd-tiff' || !!cropBounds))
+    );
+    if (!isDetecting) return null;
+    return { total, done };
+  }, [appMode, compareMode, pairs, cropBounds]);
+
   return (
     <div className="h-screen flex flex-col bg-neutral-900 text-white font-sans select-none fullscreen-zoom-target">
+      {/* 差分検知ロックオーバーレイ */}
+      {diffDetectionState && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[9000]">
+          <div className="bg-neutral-800/95 backdrop-blur-md rounded-lg p-6 shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] min-w-96">
+            <div className="flex items-center gap-3 mb-4">
+              <Loader2 className="animate-spin text-action" size={24} />
+              <span className="text-lg font-semibold">差分検知中...</span>
+            </div>
+            <div className="text-sm text-neutral-400 mb-3">
+              すべてのファイルを解析しています。完了までお待ちください。
+            </div>
+            <div className="w-full h-2 bg-neutral-700 rounded-full overflow-hidden mb-2">
+              <div
+                className="h-full bg-action transition-all duration-150 shadow-[0_0_8px_rgba(107,138,255,0.3)]"
+                style={{ width: `${(diffDetectionState.done / diffDetectionState.total) * 100}%` }}
+              />
+            </div>
+            <div className="text-sm text-neutral-300 text-center tabular-nums">
+              {diffDetectionState.done} / {diffDetectionState.total} 件
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* PDF最適化進捗オーバーレイ（MojiQと同じスタイル） */}
       {optimizeProgress && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
@@ -3870,7 +4303,48 @@ export default function MangaDiffDetector() {
         </div>
       )}
 
-      <Header isFullscreen={isFullscreen} fullscreenTransitioning={fullscreenTransitioning} onReset={handleReset} easterEgg={easterEgg} />
+      <Header isFullscreen={isFullscreen} fullscreenTransitioning={fullscreenTransitioning} onReset={requestHome} easterEgg={easterEgg} initialModeSelect={initialModeSelect} />
+
+      {/* ホーム遷移確認ダイアログ */}
+      {showHomeConfirm && (
+        <div
+          className="fixed inset-0 flex items-center justify-center z-[10001]"
+          style={{ background: 'rgba(0, 0, 0, 0.6)', backdropFilter: 'blur(4px)' }}
+          onClick={cancelHome}
+        >
+          <div
+            className="rounded-2xl p-8 text-center shadow-[0_8px_32px_rgba(0,0,0,0.5)] max-w-sm w-full mx-4"
+            style={{
+              background: '#24242c',
+              border: '1px solid rgba(255,255,255,0.10)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Home size={48} className="mx-auto mb-4 text-action" />
+            <h3 className="text-lg font-semibold text-white mb-3">ホームに戻ります</h3>
+            <p className="text-sm text-gray-400 mb-6">読み込みがリセットされます。よろしいですか？</p>
+            <div className="flex gap-3 justify-center">
+              <button
+                onClick={cancelHome}
+                className="px-6 py-2.5 rounded-lg text-sm text-gray-400 hover:text-gray-200 transition-all"
+                style={{ border: '1px solid rgba(255,255,255,0.10)' }}
+              >
+                キャンセル
+              </button>
+              <button
+                onClick={confirmHome}
+                className="px-6 py-2.5 rounded-lg text-sm font-semibold text-white transition-all hover:shadow-lg"
+                style={{
+                  background: 'rgba(107,138,255,0.15)',
+                  boxShadow: 'none',
+                }}
+              >
+                ホームに戻る
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 flex min-h-0">
         <Sidebar
@@ -3880,6 +4354,7 @@ export default function MangaDiffDetector() {
           setSidebarCollapsed={setSidebarCollapsed}
           appMode={appMode}
           setAppMode={setAppMode}
+          initialModeSelect={initialModeSelect}
           setInitialModeSelect={setInitialModeSelect}
           transferDiffToParallelView={transferDiffToParallelView}
           compareMode={compareMode}
@@ -4018,6 +4493,7 @@ export default function MangaDiffDetector() {
             setIsGDriveBrowserOpen={setIsGDriveBrowserOpen}
             initialModeSelect={initialModeSelect}
             setInitialModeSelect={setInitialModeSelect}
+            setSidebarCollapsed={setSidebarCollapsed}
             handleModeChange={handleModeChange}
             setAppMode={setAppMode}
             handleDragEnter={handleDragEnter}
@@ -4032,6 +4508,18 @@ export default function MangaDiffDetector() {
             diffNavPosition={diffNavPosition}
             goNextDiffFile={goNextDiffFile}
             goPrevDiffFile={goPrevDiffFile}
+            psdPdfOffsetX={psdPdfOffsetX}
+            psdPdfOffsetY={psdPdfOffsetY}
+            psdPdfScale={psdPdfScale}
+            psdPdfAnchor={psdPdfAnchor}
+            setPsdPdfOffsetX={setPsdPdfOffsetX}
+            setPsdPdfOffsetY={setPsdPdfOffsetY}
+            setPsdPdfScale={setPsdPdfScale}
+            setPsdPdfAnchor={setPsdPdfAnchor}
+            applyPsdPdfAlignment={applyPsdPdfAlignment}
+            autoAlignPsdPdf={autoAlignPsdPdf}
+            autoAligning={autoAligning}
+            processAllPsdPdf={processAllPsdPdf}
           />
         ) : (
           <ParallelViewer

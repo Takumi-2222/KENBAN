@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
+use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba, RgbaImage};
 use psd::Psd;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{Cursor, Write};
 use std::panic;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 
@@ -1192,6 +1192,66 @@ fn decode_psd_to_image(path: &str) -> Result<DynamicImage, String> {
     decode_psd_robust(&bytes)
 }
 
+// PSD デコード結果のプロセス内キャッシュ。
+// 多ページPDFとの照合で同じPSDを何十回もデコードする無駄を避ける。
+// 容量は2エントリのみ（最近使ったPSD 2件を保持）。
+struct PsdCacheEntry {
+    path: String,
+    mtime: u64,
+    image: Arc<DynamicImage>,
+}
+
+static PSD_DECODE_CACHE: OnceLock<Mutex<Vec<PsdCacheEntry>>> = OnceLock::new();
+const PSD_CACHE_CAPACITY: usize = 2;
+
+fn psd_decode_cache_storage() -> &'static Mutex<Vec<PsdCacheEntry>> {
+    PSD_DECODE_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn get_file_mtime_secs(path: &str) -> u64 {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// PSD をデコードして Arc<DynamicImage> を返す。同じ (path, mtime) なら内部キャッシュをヒット。
+fn decode_psd_cached(path: &str) -> Result<Arc<DynamicImage>, String> {
+    let mtime = get_file_mtime_secs(path);
+    let cache = psd_decode_cache_storage();
+
+    // ヒット確認
+    {
+        let guard = cache.lock().unwrap();
+        for entry in guard.iter() {
+            if entry.path == path && entry.mtime == mtime {
+                return Ok(Arc::clone(&entry.image));
+            }
+        }
+    }
+
+    // ミス: デコードして格納
+    let img = decode_psd_to_image(path)?;
+    let arc = Arc::new(img);
+    {
+        let mut guard = cache.lock().unwrap();
+        // 同じ path の古いエントリは削除（mtime更新時の差し替え）
+        guard.retain(|e| e.path != path);
+        // 容量超過時は古い順にエビクト
+        while guard.len() >= PSD_CACHE_CAPACITY {
+            guard.remove(0);
+        }
+        guard.push(PsdCacheEntry {
+            path: path.to_string(),
+            mtime,
+            image: Arc::clone(&arc),
+        });
+    }
+    Ok(arc)
+}
+
 // DynamicImageをJPEG 85%でtempファイルに書き出し、パスを返す（高速エンコード＋IPC転送不要）
 fn encode_to_jpeg_temp(img: &DynamicImage, cache_key: &str) -> Result<String, String> {
     let temp_dir = get_kenban_temp_dir()?;
@@ -1460,6 +1520,320 @@ fn diff_heatmap_core(
     }
 
     (heatmap_buf, total_high, all_high_pixels)
+}
+
+// マスク付きヒートマップ差分計算 — mask が 0 の領域は完全に無視する
+// color-mono モード: モノクロ側の濃い部分（黒インク・トーン）だけを比較対象にして、
+// 紙の白部分や淡いトーンを無視することで、カラー側との実質的な不一致だけを検出する
+fn diff_heatmap_core_masked(
+    a: &[u8],
+    b: &[u8],
+    mask: &[u8], // 長さ = width * height、1=対象 / 0=無視
+    width: u32,
+    height: u32,
+    threshold: u8,
+) -> (Vec<u8>, u32, Vec<DiffPixel>) {
+    let w = width as usize;
+    let h = height as usize;
+    let threshold = threshold as i16;
+
+    // Phase 1: diffMask作成（mask=0なら問答無用で 0）
+    let diff_mask: Vec<u8> = (0..h)
+        .into_par_iter()
+        .flat_map(|y| {
+            let offset = y * w * 4;
+            (0..w)
+                .map(move |x| {
+                    let m_idx = y * w + x;
+                    if mask[m_idx] == 0 {
+                        return 0u8;
+                    }
+                    let i = offset + x * 4;
+                    let dr = (a[i] as i16 - b[i] as i16).abs();
+                    let dg = (a[i + 1] as i16 - b[i + 1] as i16).abs();
+                    let db = (a[i + 2] as i16 - b[i + 2] as i16).abs();
+                    if dr > threshold || dg > threshold || db > threshold {
+                        1u8
+                    } else {
+                        0u8
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    // Phase 2: 積分画像
+    let iw = w + 1;
+    let ih = h + 1;
+    let mut integral = vec![0f32; iw * ih];
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y + 1) * iw + (x + 1);
+            integral[idx] = diff_mask[y * w + x] as f32 + integral[idx - 1] + integral[idx - iw]
+                - integral[idx - iw - 1];
+        }
+    }
+
+    // Phase 3: 密度マップ
+    let radius: i32 = 15;
+    let density_and_max: Vec<(f32, f32)> = (0..h)
+        .into_par_iter()
+        .map(|y| {
+            let mut row_max = 0f32;
+            let row: Vec<f32> = (0..w)
+                .map(|x| {
+                    let x1 = (x as i32 - radius).max(0) as usize;
+                    let y1 = (y as i32 - radius).max(0) as usize;
+                    let x2 = ((x as i32 + radius) as usize).min(w - 1);
+                    let y2 = ((y as i32 + radius) as usize).min(h - 1);
+                    let area = ((x2 - x1 + 1) * (y2 - y1 + 1)) as f32;
+                    let sum = integral[(y2 + 1) * iw + (x2 + 1)]
+                        - integral[y1 * iw + (x2 + 1)]
+                        - integral[(y2 + 1) * iw + x1]
+                        + integral[y1 * iw + x1];
+                    let d = sum / area;
+                    if d > row_max {
+                        row_max = d;
+                    }
+                    d
+                })
+                .collect();
+            row.into_iter()
+                .map(move |d| (d, row_max))
+                .collect::<Vec<_>>()
+        })
+        .flatten()
+        .collect();
+
+    let max_density = density_and_max.iter().map(|(_, m)| *m).fold(0f32, f32::max);
+
+    // Phase 4: ヒートマップ着色 + 高密度ピクセル収集
+    let density_threshold = 0.05f32;
+    let rows: Vec<(Vec<u8>, u32, Vec<DiffPixel>)> = (0..h)
+        .into_par_iter()
+        .map(|y| {
+            let row_size = w * 4;
+            let mut row_buf = vec![0u8; row_size];
+            let mut high_count = 0u32;
+            let mut high_pixels = Vec::new();
+
+            for x in 0..w {
+                let pixel_idx = y * w + x;
+                let di = x * 4;
+                let (density, _) = density_and_max[pixel_idx];
+                let normalized = if max_density > 0.0 {
+                    density / max_density
+                } else {
+                    0.0
+                };
+
+                if diff_mask[pixel_idx] == 1 && density > density_threshold {
+                    let (r, g, b) = if normalized < 0.3 {
+                        (0u8, (normalized / 0.3 * 200.0) as u8, 200u8)
+                    } else if normalized < 0.6 {
+                        let t = (normalized - 0.3) / 0.3;
+                        (
+                            (t * 255.0) as u8,
+                            (200.0 + t * 55.0) as u8,
+                            ((1.0 - t) * 200.0) as u8,
+                        )
+                    } else {
+                        let t = (normalized - 0.6) / 0.4;
+                        high_count += 1;
+                        high_pixels.push(DiffPixel {
+                            x: x as u32,
+                            y: y as u32,
+                        });
+                        (255u8, ((1.0 - t) * 255.0) as u8, 0u8)
+                    };
+                    row_buf[di] = r;
+                    row_buf[di + 1] = g;
+                    row_buf[di + 2] = b;
+                    row_buf[di + 3] = 255;
+                } else {
+                    row_buf[di + 3] = 255;
+                }
+            }
+            (row_buf, high_count, high_pixels)
+        })
+        .collect();
+
+    let total_size = w * h * 4;
+    let mut heatmap_buf = vec![0u8; total_size];
+    let mut total_high = 0u32;
+    let mut all_high_pixels = Vec::new();
+
+    for (y, (row_buf, count, pixels)) in rows.into_iter().enumerate() {
+        let offset = y * w * 4;
+        heatmap_buf[offset..offset + w * 4].copy_from_slice(&row_buf);
+        total_high += count;
+        all_high_pixels.extend(pixels);
+    }
+
+    (heatmap_buf, total_high, all_high_pixels)
+}
+
+// color-mono 用の前処理: 両画像をグレースケール化（RGBA 形式は維持、R=G=B=luma）し、
+// モノクロ側の濃い部分だけを mask=1 とする。
+// 戻り値: (rgba_a_gray, rgba_b_gray, mask, width, height)
+fn prepare_color_mono(
+    img_a: &DynamicImage,
+    img_b: &DynamicImage,
+    dark_threshold: u8,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>, u32, u32) {
+    let (wa, ha) = img_a.dimensions();
+    let (wb, hb) = img_b.dimensions();
+    let width = wa.max(wb);
+    let height = ha.max(hb);
+
+    // モノクロ側(B)の解像度に揃える方が安全だが、両者の最大に揃えて精度優先
+    let img_a = if wa != width || ha != height {
+        img_a.resize_exact(width, height, FilterType::CatmullRom)
+    } else {
+        img_a.clone()
+    };
+    let img_b = if wb != width || hb != height {
+        img_b.resize_exact(width, height, FilterType::CatmullRom)
+    } else {
+        img_b.clone()
+    };
+
+    let mut rgba_a: Vec<u8> = img_a.to_rgba8().into_raw();
+    let mut rgba_b: Vec<u8> = img_b.to_rgba8().into_raw();
+
+    // ITU-R BT.601 luma 値で R=G=B 置換（A=RGB / B=Grayscale の色味差を吸収）
+    rgba_a.par_chunks_mut(4).for_each(|p| {
+        let y = ((p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114) / 1000) as u8;
+        p[0] = y;
+        p[1] = y;
+        p[2] = y;
+    });
+    rgba_b.par_chunks_mut(4).for_each(|p| {
+        let y = ((p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114) / 1000) as u8;
+        p[0] = y;
+        p[1] = y;
+        p[2] = y;
+    });
+
+    // モノクロ側の濃い領域だけを mask=1 にする（dark_threshold 以下＝濃い）
+    let mask: Vec<u8> = rgba_b
+        .par_chunks(4)
+        .map(|p| if p[0] <= dark_threshold { 1u8 } else { 0u8 })
+        .collect();
+
+    (rgba_a, rgba_b, mask, width, height)
+}
+
+// color-mono 用の差分計算（ヒートマップ + モノクロ濃部マスク）
+#[tauri::command]
+fn compute_diff_color_mono(
+    path_a: String, // カラー (RGB 350dpi)
+    path_b: String, // モノクロ (Grayscale 600dpi)
+    threshold: u8,
+    dark_threshold: Option<u8>, // この値以下を「濃い」として比較対象にする (default 200)
+) -> Result<DiffHeatmapResult, String> {
+    let (img_a, img_b) = rayon::join(|| decode_image_file(&path_a), || decode_image_file(&path_b));
+    let img_a = img_a?;
+    let img_b = img_b?;
+
+    let dark = dark_threshold.unwrap_or(200);
+    let (rgba_a, rgba_b, mask, width, height) = prepare_color_mono(&img_a, &img_b, dark);
+
+    // ヒートマップ差分計算
+    let (heatmap_buf, high_density_count, high_pixels) =
+        diff_heatmap_core_masked(&rgba_a, &rgba_b, &mask, width, height, threshold);
+
+    // マーカークラスタリング (psd-tiff と同じパラメータ)
+    let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
+
+    // diffProbability
+    let diff_probability = if high_density_count > 0 {
+        let total_pixels = (width as f64) * (height as f64);
+        let base_prob = 70.0;
+        let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
+        ((base_prob + additional) * 10.0).round() / 10.0
+    } else {
+        0.0
+    };
+
+    // 表示用エンコード: オリジナルA(カラーのまま) / オリジナルB(モノクロのまま) / 差分ヒートマップ
+    // ※ A表示・B表示はカラー/モノクロのオリジナルをそのまま見せる。グレースケール化は差分計算専用。
+    let cache_a = format!("colmono_a_{}", versioned_path_key(&path_a));
+    let cache_b = format!("colmono_b_{}", versioned_path_key(&path_b));
+    let cache_d = format!(
+        "colmono_d_{}_{}",
+        versioned_path_key(&path_a),
+        versioned_path_key(&path_b)
+    );
+
+    // rgba_a はグレースケール化済みバッファだが、もう不要（diff計算後）— 即解放
+    drop(rgba_a);
+    drop(rgba_b);
+    drop(mask);
+
+    let ((src_a_result, src_b_result), diff_result) = rayon::join(
+        || {
+            rayon::join(
+                || encode_to_jpeg_temp(&img_a, &cache_a),
+                || encode_to_jpeg_temp(&img_b, &cache_b),
+            )
+        },
+        || encode_rgba_to_png_temp(&heatmap_buf, width, height, &cache_d),
+    );
+
+    let src_a = src_a_result?;
+    Ok(DiffHeatmapResult {
+        src_a: src_a.clone(),
+        src_b: src_b_result?,
+        // processed_a はフロント側でカラーのまま表示するため、src_a と同一値を返す
+        processed_a: src_a,
+        diff_src: diff_result?,
+        has_diff: high_density_count > 0,
+        diff_probability,
+        high_density_count,
+        markers,
+        image_width: width,
+        image_height: height,
+    })
+}
+
+// color-mono 用の Phase1 軽量チェック（画像エンコードなし）
+#[tauri::command]
+fn check_diff_color_mono(
+    path_a: String,
+    path_b: String,
+    threshold: u8,
+    dark_threshold: Option<u8>,
+) -> Result<DiffCheckHeatmapResult, String> {
+    let (img_a, img_b) = rayon::join(|| decode_image_file(&path_a), || decode_image_file(&path_b));
+    let img_a = img_a?;
+    let img_b = img_b?;
+
+    let dark = dark_threshold.unwrap_or(200);
+    let (rgba_a, rgba_b, mask, width, height) = prepare_color_mono(&img_a, &img_b, dark);
+
+    let (_heatmap_buf, high_density_count, high_pixels) =
+        diff_heatmap_core_masked(&rgba_a, &rgba_b, &mask, width, height, threshold);
+
+    let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
+
+    let diff_probability = if high_density_count > 0 {
+        let total_pixels = (width as f64) * (height as f64);
+        let base_prob = 70.0;
+        let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
+        ((base_prob + additional) * 10.0).round() / 10.0
+    } else {
+        0.0
+    };
+
+    Ok(DiffCheckHeatmapResult {
+        has_diff: high_density_count > 0,
+        diff_probability,
+        high_density_count,
+        markers,
+        image_width: width,
+        image_height: height,
+    })
 }
 
 // Union-Findクラスタリング → DiffMarkerリスト
@@ -1981,6 +2355,614 @@ fn compute_pdf_diff(
     })
 }
 
+// ============== psd-pdf（PSD vs PDF/画像）差分計算 ==============
+
+/// 参照ファイル（PDF または画像）をデコード → 縮尺を PSD に合わせるための寸法情報を返す
+/// PDF の場合は指定された `page`（0-indexed）をレンダリングする。画像は page>0 でエラー。
+fn decode_reference_for_psd_compare(
+    ref_path: &str,
+    psd_w: u32,
+    psd_h: u32,
+    page: u32,
+) -> Result<DynamicImage, String> {
+    let lower = ref_path.to_lowercase();
+    if lower.ends_with(".pdf") {
+        let pdfium = get_pdfium()?;
+
+        // 指定ページの素の viewport サイズ（pt）を取得 → PSD寸法に合わせたDPIを算出
+        let (pt_w, pt_h) = {
+            let doc = pdfium
+                .load_pdf_from_file(ref_path, None)
+                .map_err(|e| format!("Failed to open PDF '{}': {}", ref_path, e))?;
+            let page_count = doc.pages().len() as u32;
+            if page_count == 0 {
+                return Err("PDFにページがありません".to_string());
+            }
+            if page >= page_count {
+                return Err(format!(
+                    "PDF ページ {} は範囲外です (総ページ数: {})",
+                    page + 1,
+                    page_count
+                ));
+            }
+            let pg = doc
+                .pages()
+                .get(page as u16)
+                .map_err(|e| format!("Failed to load PDF page {}: {}", page + 1, e))?;
+            (pg.width().value as f32, pg.height().value as f32)
+        };
+
+        let scale_by_w = if pt_w > 0.0 {
+            psd_w as f32 / pt_w
+        } else {
+            300.0 / 72.0
+        };
+        let scale_by_h = if pt_h > 0.0 {
+            psd_h as f32 / pt_h
+        } else {
+            scale_by_w
+        };
+        let scale = scale_by_w
+            .min(scale_by_h)
+            .max(150.0 / 72.0)
+            .min(600.0 / 72.0);
+        let dpi = scale * 72.0;
+
+        let (samples, w, h) = render_pdf_page_pdfium(&pdfium, ref_path, page, dpi, true)?;
+        let buf: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(w, h, samples)
+            .ok_or_else(|| "Failed to create PDF buffer".to_string())?;
+        Ok(DynamicImage::ImageRgba8(buf))
+    } else {
+        if page > 0 {
+            return Err(format!(
+                "画像ファイルにはページ {} はありません",
+                page + 1
+            ));
+        }
+        image::open(ref_path).map_err(|e| format!("Failed to open reference '{}': {}", ref_path, e))
+    }
+}
+
+/// 「動かす側 (mover)」をアスペクト比保持で「キャンバス側 (canvas_w×canvas_h)」にフィットさせ、
+/// ユーザー指定の描画位置オフセット（X/Y、ピクセル単位）で平行移動する。
+/// `scale_user`=1.0 は自動フィット、それ以外は微調整倍率。
+/// この関数は PSD↔PDF どちらをアンカーにしても同じロジックで使える（mover の中身が違うだけ）。
+fn render_aligned_to_canvas(
+    mover_img: &DynamicImage,
+    canvas_w: u32,
+    canvas_h: u32,
+    scale_user: f32,
+    offset_x: i32,
+    offset_y: i32,
+) -> DynamicImage {
+    let (mw, mh) = mover_img.dimensions();
+    let sx = canvas_w as f32 / (mw.max(1) as f32);
+    let sy = canvas_h as f32 / (mh.max(1) as f32);
+    let scale = sx.min(sy) * scale_user;
+
+    let drawn_w = ((mw as f32) * scale).round().max(1.0) as u32;
+    let drawn_h = ((mh as f32) * scale).round().max(1.0) as u32;
+
+    let scaled = mover_img.resize_exact(drawn_w, drawn_h, FilterType::CatmullRom);
+    let scaled_rgba = scaled.to_rgba8();
+
+    let mut canvas: ImageBuffer<Rgba<u8>, Vec<u8>> =
+        ImageBuffer::from_pixel(canvas_w, canvas_h, Rgba([255, 255, 255, 255]));
+    let origin_x = (canvas_w as i64 - drawn_w as i64) / 2 + offset_x as i64;
+    let origin_y = (canvas_h as i64 - drawn_h as i64) / 2 + offset_y as i64;
+    for y in 0..drawn_h as i64 {
+        let cy = origin_y + y;
+        if cy < 0 || cy >= canvas_h as i64 {
+            continue;
+        }
+        for x in 0..drawn_w as i64 {
+            let cx = origin_x + x;
+            if cx < 0 || cx >= canvas_w as i64 {
+                continue;
+            }
+            let p = scaled_rgba.get_pixel(x as u32, y as u32);
+            canvas.put_pixel(cx as u32, cy as u32, *p);
+        }
+    }
+    DynamicImage::ImageRgba8(canvas)
+}
+
+
+#[tauri::command]
+fn compute_diff_psd_pdf(
+    psd_path: String,
+    ref_path: String,
+    threshold: u8,
+    scale: Option<f32>,
+    offset_x: Option<i32>,
+    offset_y: Option<i32>,
+    anchor: Option<String>,
+    page: Option<u32>,
+    diff_style: Option<String>,
+) -> Result<DiffHeatmapResult, String> {
+    let scale = scale.unwrap_or(1.0).clamp(0.5, 2.0);
+    let offset_x = offset_x.unwrap_or(0);
+    let offset_y = offset_y.unwrap_or(0);
+    let anchor_is_psd = anchor.as_deref() == Some("psd");
+    let page = page.unwrap_or(0);
+
+    // PSDはプロセス内キャッシュを使う（多ページPDFの場合、毎回のデコードを回避）
+    let psd_arc = decode_psd_cached(&psd_path)?;
+    let psd_img: &DynamicImage = &psd_arc;
+    let (psd_w, psd_h) = psd_img.dimensions();
+    let ref_img = decode_reference_for_psd_compare(&ref_path, psd_w, psd_h, page)?;
+    let (rw, rh) = ref_img.dimensions();
+
+    let (canvas_w, canvas_h, canvas_img, mover_img) = if anchor_is_psd {
+        (psd_w, psd_h, psd_img, &ref_img)
+    } else {
+        (rw, rh, &ref_img, psd_img)
+    };
+
+    let processed_mover =
+        render_aligned_to_canvas(mover_img, canvas_w, canvas_h, scale, offset_x, offset_y);
+
+    let (rgba_a, rgba_b) = if anchor_is_psd {
+        (canvas_img.to_rgba8(), processed_mover.to_rgba8())
+    } else {
+        (processed_mover.to_rgba8(), canvas_img.to_rgba8())
+    };
+
+    let use_simple_diff = diff_style.as_deref() == Some("simple");
+    let (diff_buf, diff_count, markers, diff_probability) = if use_simple_diff {
+        let (diff_buf, diff_count, diff_pixels) =
+            diff_simple_core(rgba_a.as_raw(), rgba_b.as_raw(), canvas_w, canvas_h, threshold);
+        let markers = cluster_markers(&diff_pixels, 200, 1, 300.0);
+        (diff_buf, diff_count, markers, 0.0)
+    } else {
+        let (heatmap_buf, high_density_count, high_pixels) =
+            diff_heatmap_core(rgba_a.as_raw(), rgba_b.as_raw(), canvas_w, canvas_h, threshold);
+        let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
+        let diff_probability = if high_density_count > 0 {
+            let total_pixels = (canvas_w as f64) * (canvas_h as f64);
+            let base_prob = 70.0;
+            let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
+            ((base_prob + additional) * 10.0).round() / 10.0
+        } else {
+            0.0
+        };
+        (heatmap_buf, high_density_count, markers, diff_probability)
+    };
+
+    // anchor=psd のときは A 側に出すのは PSD オリジナル、anchor=ref のときは PSD を ref に揃えた絵
+    let processed_a_to_encode: DynamicImage = if anchor_is_psd {
+        psd_img.clone()
+    } else {
+        processed_mover.clone()
+    };
+
+    let cache_a = format!("psdpdf_a_{}", versioned_path_key(&psd_path));
+    let cache_b = format!("psdpdf_b_{}_p{}", versioned_path_key(&ref_path), page);
+    let cache_pa = format!(
+        "psdpdf_pa_{}_{}_{}_p{}_{}_{}_{}",
+        versioned_path_key(&psd_path),
+        versioned_path_key(&ref_path),
+        if anchor_is_psd { "psd" } else { "ref" },
+        page,
+        (scale * 10000.0) as i32,
+        offset_x,
+        offset_y
+    );
+    let cache_d = format!(
+        "psdpdf_{}_d_{}_{}_{}_p{}_{}_{}_{}",
+        if use_simple_diff { "simple" } else { "heatmap" },
+        versioned_path_key(&psd_path),
+        versioned_path_key(&ref_path),
+        if anchor_is_psd { "psd" } else { "ref" },
+        page,
+        (scale * 10000.0) as i32,
+        offset_x,
+        offset_y
+    );
+    let ((src_a_result, src_b_result), (processed_a_result, diff_result)) = rayon::join(
+        || {
+            rayon::join(
+                || encode_to_jpeg_temp(&psd_img, &cache_a),
+                || encode_to_jpeg_temp(&ref_img, &cache_b),
+            )
+        },
+        || {
+            rayon::join(
+                || encode_to_jpeg_temp(&processed_a_to_encode, &cache_pa),
+                || encode_rgba_to_png_temp(&diff_buf, canvas_w, canvas_h, &cache_d),
+            )
+        },
+    );
+
+    Ok(DiffHeatmapResult {
+        src_a: src_a_result?,
+        src_b: src_b_result?,
+        processed_a: processed_a_result?,
+        diff_src: diff_result?,
+        has_diff: diff_count > 0,
+        diff_probability,
+        high_density_count: diff_count,
+        markers,
+        image_width: canvas_w,
+        image_height: canvas_h,
+    })
+}
+
+// Phase1用: psd-pdf 軽量チェック（画像エンコードなし）
+#[tauri::command]
+fn check_diff_psd_pdf(
+    psd_path: String,
+    ref_path: String,
+    threshold: u8,
+    scale: Option<f32>,
+    offset_x: Option<i32>,
+    offset_y: Option<i32>,
+    anchor: Option<String>,
+    page: Option<u32>,
+    diff_style: Option<String>,
+) -> Result<DiffCheckHeatmapResult, String> {
+    let scale = scale.unwrap_or(1.0).clamp(0.5, 2.0);
+    let offset_x = offset_x.unwrap_or(0);
+    let offset_y = offset_y.unwrap_or(0);
+    let anchor_is_psd = anchor.as_deref() == Some("psd");
+    let page = page.unwrap_or(0);
+
+    let psd_arc = decode_psd_cached(&psd_path)?;
+    let psd_img: &DynamicImage = &psd_arc;
+    let (psd_w, psd_h) = psd_img.dimensions();
+    let ref_img = decode_reference_for_psd_compare(&ref_path, psd_w, psd_h, page)?;
+    let (rw, rh) = ref_img.dimensions();
+
+    let (canvas_w, canvas_h, canvas_img, mover_img) = if anchor_is_psd {
+        (psd_w, psd_h, psd_img, &ref_img)
+    } else {
+        (rw, rh, &ref_img, psd_img)
+    };
+    let processed_mover =
+        render_aligned_to_canvas(mover_img, canvas_w, canvas_h, scale, offset_x, offset_y);
+
+    let (rgba_a, rgba_b) = if anchor_is_psd {
+        (canvas_img.to_rgba8(), processed_mover.to_rgba8())
+    } else {
+        (processed_mover.to_rgba8(), canvas_img.to_rgba8())
+    };
+
+    let use_simple_diff = diff_style.as_deref() == Some("simple");
+    let (diff_count, markers, diff_probability) = if use_simple_diff {
+        let (_diff_buf, diff_count, diff_pixels) =
+            diff_simple_core(rgba_a.as_raw(), rgba_b.as_raw(), canvas_w, canvas_h, threshold);
+        let markers = cluster_markers(&diff_pixels, 200, 1, 300.0);
+        (diff_count, markers, 0.0)
+    } else {
+        let (_heatmap_buf, high_density_count, high_pixels) =
+            diff_heatmap_core(rgba_a.as_raw(), rgba_b.as_raw(), canvas_w, canvas_h, threshold);
+        let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
+        let diff_probability = if high_density_count > 0 {
+            let total_pixels = (canvas_w as f64) * (canvas_h as f64);
+            let base_prob = 70.0;
+            let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
+            ((base_prob + additional) * 10.0).round() / 10.0
+        } else {
+            0.0
+        };
+        (high_density_count, markers, diff_probability)
+    };
+
+    Ok(DiffCheckHeatmapResult {
+        has_diff: diff_count > 0,
+        diff_probability,
+        high_density_count: diff_count,
+        markers,
+        image_width: canvas_w,
+        image_height: canvas_h,
+    })
+}
+
+// ============== psd-pdf 自動位置合わせ ==============
+
+#[derive(Serialize)]
+struct AutoAlignResult {
+    best_scale: f32,
+    best_offset_x: i32,
+    best_offset_y: i32,
+    src_a: String,
+    src_b: String,
+    processed_a: String,
+    diff_src: String,
+    has_diff: bool,
+    diff_probability: f64,
+    high_density_count: u32,
+    markers: Vec<DiffMarker>,
+    image_width: u32,
+    image_height: u32,
+}
+
+/// 事前にリサイズ済みの「動かす側」を、与えられたオフセットでキャンバスに重ねたときの
+/// "重なり領域のみ" の平均ピクセル差分を返す（×1000 で整数精度キープ、小さいほど一致）。
+/// PSDがカバーしていない領域（サイズ・オフセットでキャンバスからはみ出る/足りない部分）は
+/// 合計にも分母にも含めない＝差分ゼロ扱い。
+/// 重なりが5%未満の候補は u64::MAX を返して棄却する。
+fn score_overlap_only(
+    scaled_mover_rgba: &RgbaImage,
+    canvas_rgba: &RgbaImage,
+    canvas_w: u32,
+    canvas_h: u32,
+    offset_x: i32,
+    offset_y: i32,
+) -> u64 {
+    let (sw, sh) = scaled_mover_rgba.dimensions();
+    let origin_x = (canvas_w as i64 - sw as i64) / 2 + offset_x as i64;
+    let origin_y = (canvas_h as i64 - sh as i64) / 2 + offset_y as i64;
+
+    let x0 = (-origin_x).max(0).min(sw as i64) as u32;
+    let y0 = (-origin_y).max(0).min(sh as i64) as u32;
+    let x1 = (canvas_w as i64 - origin_x).max(0).min(sw as i64) as u32;
+    let y1 = (canvas_h as i64 - origin_y).max(0).min(sh as i64) as u32;
+
+    if x1 <= x0 || y1 <= y0 {
+        return u64::MAX;
+    }
+    let overlap_pixels = ((x1 - x0) as u64) * ((y1 - y0) as u64);
+    let min_overlap = ((canvas_w as u64) * (canvas_h as u64)) / 20;
+    if overlap_pixels < min_overlap {
+        return u64::MAX;
+    }
+
+    let mover_data = scaled_mover_rgba.as_raw();
+    let canvas_data = canvas_rgba.as_raw();
+    let mut sum: u64 = 0;
+    for py in y0..y1 {
+        let cy = (origin_y + py as i64) as u32;
+        let mover_row = (py as usize) * (sw as usize) * 4;
+        let canvas_row = (cy as usize) * (canvas_w as usize) * 4;
+        for px in x0..x1 {
+            let cx = (origin_x + px as i64) as u32;
+            let mi = mover_row + (px as usize) * 4;
+            let ci = canvas_row + (cx as usize) * 4;
+            let dr = (canvas_data[ci] as i32 - mover_data[mi] as i32).unsigned_abs() as u64;
+            let dg = (canvas_data[ci + 1] as i32 - mover_data[mi + 1] as i32).unsigned_abs() as u64;
+            let db = (canvas_data[ci + 2] as i32 - mover_data[mi + 2] as i32).unsigned_abs() as u64;
+            sum += dr + dg + db;
+        }
+    }
+
+    sum.saturating_mul(1000) / overlap_pixels.max(1)
+}
+
+/// アスペクト比保持で `mover` を canvas_w×canvas_h に向けてフィットスケールし、
+/// さらに `scale_user` を掛けた寸法でリサイズ → RgbaImage を返す。
+fn make_scaled_mover_rgba(
+    mover_thumb: &DynamicImage,
+    canvas_w: u32,
+    canvas_h: u32,
+    scale_user: f32,
+) -> RgbaImage {
+    let (mw, mh) = mover_thumb.dimensions();
+    let sx = canvas_w as f32 / (mw.max(1) as f32);
+    let sy = canvas_h as f32 / (mh.max(1) as f32);
+    let final_s = sx.min(sy) * scale_user;
+    let dw = ((mw as f32) * final_s).round().max(1.0) as u32;
+    let dh = ((mh as f32) * final_s).round().max(1.0) as u32;
+    mover_thumb
+        .resize_exact(dw, dh, FilterType::Triangle)
+        .to_rgba8()
+}
+
+/// 中心を固定したまま、最良スケールだけを 5 段階で探索する。
+/// offset は常に (0, 0) を返す（描画中心 = キャンバス中央 を保持）。
+/// 中心固定なら scale 1次元探索なので、その分のリソースを精度向上に振り分ける。
+fn search_best_scale_centered(
+    mover_thumb: &DynamicImage,
+    canvas_thumb_rgba: &RgbaImage,
+    tw: u32,
+    th: u32,
+) -> (f32, i32, i32) {
+    // 与えられたスケール集合のうち最良 (最小スコア) のものを返す
+    let score_at_scale = |s: f32| -> u64 {
+        let scaled = make_scaled_mover_rgba(mover_thumb, tw, th, s);
+        score_overlap_only(&scaled, canvas_thumb_rgba, tw, th, 0, 0)
+    };
+
+    let best_in = |scales: Vec<f32>| -> (u64, f32) {
+        scales
+            .into_par_iter()
+            .map(|s| (score_at_scale(s), s))
+            .min_by_key(|x| x.0)
+            .unwrap_or((u64::MAX, 1.0))
+    };
+
+    // ============ Pass 1: 粗探索 0.80〜1.20 step 2% (21点) ============
+    let scales_coarse: Vec<f32> = (-10..=10).map(|i| 1.0 + (i as f32) * 0.02).collect();
+    let (_, s1) = best_in(scales_coarse);
+
+    // ============ Pass 2: 中探索 ±2% step 0.5% (9点) ============
+    let scales_mid: Vec<f32> = (-4..=4)
+        .map(|i| s1 + (i as f32) * 0.005)
+        .filter(|s| *s > 0.5 && *s < 2.0)
+        .collect();
+    let (_, s2) = best_in(scales_mid);
+
+    // ============ Pass 3: 精探索 ±0.5% step 0.05% (21点) ============
+    let scales_fine: Vec<f32> = (-10..=10)
+        .map(|i| s2 + (i as f32) * 0.0005)
+        .filter(|s| *s > 0.5 && *s < 2.0)
+        .collect();
+    let (_, s3) = best_in(scales_fine);
+
+    // ============ Pass 4: 超精探索 ±0.02% step 0.002% (21点) ============
+    let scales_ultra: Vec<f32> = (-10..=10)
+        .map(|i| s3 + (i as f32) * 0.00002)
+        .filter(|s| *s > 0.5 && *s < 2.0)
+        .collect();
+    let (_, s4) = best_in(scales_ultra);
+
+    // ============ Pass 5: 究極精探索 ±0.005% step 0.0005% (21点 / 5 ppm刻み) ============
+    let scales_micro: Vec<f32> = (-10..=10)
+        .map(|i| s4 + (i as f32) * 0.000005)
+        .filter(|s| *s > 0.5 && *s < 2.0)
+        .collect();
+    let (_, s_final) = best_in(scales_micro);
+
+    (s_final, 0, 0)
+}
+
+/// 自動位置合わせ。
+/// `anchor`: "ref" (デフォルト) なら PDF/画像が基準で PSD を動かす。
+///           "psd"             なら PSD が基準で PDF/画像を動かす。
+#[tauri::command]
+fn auto_align_psd_pdf(
+    psd_path: String,
+    ref_path: String,
+    threshold: u8,
+    anchor: Option<String>,
+    page: Option<u32>,
+    diff_style: Option<String>,
+) -> Result<AutoAlignResult, String> {
+    let anchor = anchor.as_deref().unwrap_or("ref");
+    let anchor_is_psd = anchor == "psd";
+    let page = page.unwrap_or(0);
+
+    // フル解像度でデコード（PSDはキャッシュ経由）
+    let psd_arc = decode_psd_cached(&psd_path)?;
+    let psd_img: &DynamicImage = &psd_arc;
+    let (psd_w, psd_h) = psd_img.dimensions();
+    let ref_img = decode_reference_for_psd_compare(&ref_path, psd_w, psd_h, page)?;
+    let (rw, rh) = ref_img.dimensions();
+
+    // アンカー / ムーバーを選ぶ
+    let (canvas_w, canvas_h, canvas_img, mover_img) = if anchor_is_psd {
+        (psd_w, psd_h, psd_img, &ref_img)
+    } else {
+        (rw, rh, &ref_img, psd_img)
+    };
+
+    // 探索用サムネ（最大1000px）— 大きい方が scale 識別解像度が上がる
+    let max_thumb_dim: u32 = 1000;
+    let thumb_ratio = (max_thumb_dim as f32 / canvas_w.max(canvas_h) as f32).min(1.0);
+    let tw = ((canvas_w as f32) * thumb_ratio).round().max(1.0) as u32;
+    let th = ((canvas_h as f32) * thumb_ratio).round().max(1.0) as u32;
+    let mover_thumb = mover_img.resize_exact(
+        ((mover_img.width() as f32) * thumb_ratio).round().max(1.0) as u32,
+        ((mover_img.height() as f32) * thumb_ratio).round().max(1.0) as u32,
+        FilterType::Triangle,
+    );
+    let canvas_thumb = canvas_img.resize_exact(tw, th, FilterType::Triangle);
+    let canvas_thumb_rgba = canvas_thumb.to_rgba8();
+
+    // 中心固定で 5 段階スケール探索（精度: ±0.005% / 中心は (0,0) 固定）
+    let (best_scale, _, _) =
+        search_best_scale_centered(&mover_thumb, &canvas_thumb_rgba, tw, th);
+    let final_offset_x: i32 = 0;
+    let final_offset_y: i32 = 0;
+
+    // === ベストパラメータでフル解像度の差分を計算 ===
+    let processed_mover = render_aligned_to_canvas(
+        mover_img,
+        canvas_w,
+        canvas_h,
+        best_scale,
+        final_offset_x,
+        final_offset_y,
+    );
+
+    let (rgba_a, rgba_b, diff_w, diff_h) = if anchor_is_psd {
+        (
+            canvas_img.to_rgba8(),
+            processed_mover.to_rgba8(),
+            canvas_w,
+            canvas_h,
+        )
+    } else {
+        (
+            processed_mover.to_rgba8(),
+            canvas_img.to_rgba8(),
+            canvas_w,
+            canvas_h,
+        )
+    };
+    let use_simple_diff = diff_style.as_deref() == Some("simple");
+    let (diff_buf, diff_count, markers, diff_probability) = if use_simple_diff {
+        let (diff_buf, diff_count, diff_pixels) =
+            diff_simple_core(rgba_a.as_raw(), rgba_b.as_raw(), diff_w, diff_h, threshold);
+        let markers = cluster_markers(&diff_pixels, 200, 1, 300.0);
+        (diff_buf, diff_count, markers, 0.0)
+    } else {
+        let (heatmap_buf, high_density_count, high_pixels) =
+            diff_heatmap_core(rgba_a.as_raw(), rgba_b.as_raw(), diff_w, diff_h, threshold);
+        let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
+        let diff_probability = if high_density_count > 0 {
+            let total_pixels = (diff_w as f64) * (diff_h as f64);
+            let base_prob = 70.0;
+            let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
+            ((base_prob + additional) * 10.0).round() / 10.0
+        } else {
+            0.0
+        };
+        (heatmap_buf, high_density_count, markers, diff_probability)
+    };
+
+    // 表示用エンコード: src_a は PSD、src_b は ref、processed_a は「PSDを揃えた絵」
+    let processed_a_to_encode: DynamicImage = if anchor_is_psd {
+        psd_img.clone()
+    } else {
+        processed_mover.clone()
+    };
+
+    let cache_a = format!("psdpdf_a_{}", versioned_path_key(&psd_path));
+    let cache_b = format!("psdpdf_b_{}_p{}", versioned_path_key(&ref_path), page);
+    let cache_pa = format!(
+        "psdpdf_auto_pa_{}_{}_{}_p{}_{}_{}_{}",
+        versioned_path_key(&psd_path),
+        versioned_path_key(&ref_path),
+        if anchor_is_psd { "psd" } else { "ref" },
+        page,
+        (best_scale * 10000.0) as i32,
+        final_offset_x,
+        final_offset_y
+    );
+    let cache_d = format!(
+        "psdpdf_auto_{}_d_{}_{}_{}_p{}_{}_{}_{}",
+        if use_simple_diff { "simple" } else { "heatmap" },
+        versioned_path_key(&psd_path),
+        versioned_path_key(&ref_path),
+        if anchor_is_psd { "psd" } else { "ref" },
+        page,
+        (best_scale * 10000.0) as i32,
+        final_offset_x,
+        final_offset_y
+    );
+    let ((src_a_result, src_b_result), (processed_a_result, diff_result)) = rayon::join(
+        || {
+            rayon::join(
+                || encode_to_jpeg_temp(&psd_img, &cache_a),
+                || encode_to_jpeg_temp(&ref_img, &cache_b),
+            )
+        },
+        || {
+            rayon::join(
+                || encode_to_jpeg_temp(&processed_a_to_encode, &cache_pa),
+                || encode_rgba_to_png_temp(&diff_buf, diff_w, diff_h, &cache_d),
+            )
+        },
+    );
+
+    Ok(AutoAlignResult {
+        best_scale,
+        best_offset_x: final_offset_x,
+        best_offset_y: final_offset_y,
+        src_a: src_a_result?,
+        src_b: src_b_result?,
+        processed_a: processed_a_result?,
+        diff_src: diff_result?,
+        has_diff: diff_count > 0,
+        diff_probability,
+        high_density_count: diff_count,
+        markers,
+        image_width: diff_w,
+        image_height: diff_h,
+    })
+}
+
 // PDFの指定ページを画像としてレンダリング（並列ビュー用）
 #[derive(Serialize)]
 struct PdfPageImage {
@@ -2263,9 +3245,14 @@ pub fn run() {
             open_pdf_in_mojiq,
             compute_diff_simple,
             compute_diff_heatmap,
+            compute_diff_color_mono,
             check_diff_simple,
             check_diff_heatmap,
+            check_diff_color_mono,
             compute_pdf_diff,
+            compute_diff_psd_pdf,
+            check_diff_psd_pdf,
+            auto_align_psd_pdf,
             render_pdf_page,
             get_pdf_page_count,
             get_cli_args,
