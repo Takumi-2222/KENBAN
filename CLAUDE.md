@@ -4,6 +4,56 @@
 2つの画像ファイル（TIFF/PSD/PDF）を比較して差分を検出する検版支援デスクトップアプリ。
 Tauri 2 + React + TypeScript + Rust で構成。
 
+## 速度最適化（2026-05-15、speed lab で検証後に移植）
+`KENBAN\処理速度研究\psd-speed-lab` で計測・検証した PSD 差分高速化を本体へ移植。
+PSD×PSD で **total ~1655ms → ~335ms（約5倍速）** を実測（4961×7016 / 70MB級）。
+
+### 移植した3つの最適化（src-tauri/src/lib.rs）
+1. **`fast_downscale_to_rgba`**（新ヘルパー）: `fast_image_resize`(SIMD) でリサイズ → `RgbaImage` を直接返す。元が Rgba8 ならゼロコピー参照。`image` crate の単スレッド Triangle/CatmullRom より実測 **8倍速**。filter 引数で品質選択（Bilinear≒Triangle / CatmullRom=psd-tiff 品質維持）
+2. **A/B リサイズの並列化**: `compute_diff_simple` / `compute_diff_heatmap` / `compute_diff_color_mono` の resize 段を `rayon::join` で A/B 同時実行 + `fast_downscale_to_rgba` 使用。diff 後に `DynamicImage::ImageRgba8` へ move（コピーなし）でエンコード、full-res は早期 `drop`
+3. **`decode_psd_fallback` の並列化**（全PSDモード共通で効く）:
+   - RLE 展開: 全スキャンライン開始位置を prefix-sum で先に確定 → `par_chunks_mut(width)` で行並列展開（実測 ~70ms→~12ms）
+   - RGBA 組立: CMYK/RGB 両パスを `par_chunks_mut(4)` で並列化（実測 ~210ms→~10ms、グレースケール大の最大ボトルネックだった）
+
+### 依存追加
+- `Cargo.toml`: `fast_image_resize = "5"` + `[profile.dev.package.fast_image_resize] opt-level=3`
+
+### 計測の続き（speed lab 側、未移植）
+speed lab には decode 各段の `[PERF-DEC]` 計測が入っている。残ボトルネックは
+encode(~130ms, turbojpeg 化候補) と fs_read(~50ms, I/Oバウンド)。本体には計測 eprintln は
+入れていない（速度研究は speed lab で継続し、確定した改善のみ本体へ移植する方針）。
+
+## PDF差分・分割ビューアーの高速化（2026-05-15 追加移植）
+speed lab で PDF×PDF を計測（13ページ/300dpi で **39.5s → 19.1s 約2倍速**）し、確定分を移植。
+
+### `compute_pdf_diff_all` / `pdf_postprocess_page`（新規, src-tauri/src/lib.rs）
+- PDF を A/B **各1回だけロード**（旧 `compute_pdf_diff` はページ毎に `load_pdf_from_file` で
+  PDF 全体を再パースしていた無駄を除去）
+- `std::thread::scope` でパイプライン化: PDFium レンダ（逐次・スレッド非安全なので caller
+  スレッド）と後段 resize/diff/encode（純CPU）をワーカーへ逃がし、後段を次ページのレンダ裏に隠す
+- 全ページ完了後に `Vec<DiffSimpleResult>` を一括返却（ストリーミング配信はしない＝
+  ユーザー要望「1ページずつでなく最初にまとめて処理」に準拠）
+- フロント [src/App.tsx] の pdf-pdf バックグラウンドプリレンダ（旧: 毎ページ `compute_pdf_diff`
+  を while ループ）を `compute_pdf_diff_all` 1回呼び出しに置換。選択中ページは従来通り
+  `processPair`(`compute_pdf_diff`) が即表示するので体感遅延なし。`pdfComputingPages` は
+  batch化により常時空（ページ毎スピナー廃止）、`inFlightPagesRef` 削除
+
+### 分割ビューアー（parallel-view）も同じ高速経路に統一
+- `resize_and_write_to_temp`（`decode_and_resize_image` 経由＝分割ビューア表示用）の
+  `image` crate 単スレッド resize を `fast_downscale_to_rgba`(SIMD並列) に置換
+- 分割ビューアの PSD 表示（`parse_psd` → `decode_psd_robust` → `decode_psd_fallback`）は
+  上記「decode_psd_fallback 並列化」を共有しているため自動的に高速化済み
+
+### psd-pdf モードも高速経路へ（2026-05-15 段階移植・stage1）
+- `render_aligned_to_canvas`（compute_diff_psd_pdf / check_diff_psd_pdf の本処理リサイズ実体。
+  auto_align の最終フル解像度レンダでも使用）の `resize_exact(CatmullRom)` を
+  `fast_downscale_to_rgba(.., FirFilter::CatmullRom)` に置換（失敗時のみ旧経路へフォールバック、
+  シグネチャ不変＝呼び出し側無改変）。CatmullRom 同士で位置合わせ品質は従来同等
+- **auto_align の探索ループ（`make_scaled_mover_rgba`、サムネ≤1000px）は意図的に未変更**。
+  精度敏感かつ既に高速なため。render_aligned_to_canvas 変更は探索精度に無影響
+- これで全 7 モード + 分割ビューアーが新リサイズ方式に統一（PSDデコードも
+  decode_psd_fallback 並列化を全モード共有）。残: auto_align 探索ループのみ旧 Triangle（意図的）
+
 ## v2.3.0 変更点（2026-05-14）
 参照側 (`KENBAN-main`) からの機能ポート。比較モードを 5 → 7 種類に拡張。
 
@@ -107,6 +157,13 @@ PSD と PDF/画像 (TIFF/JPG/PNG) を比較するモード。
 - **auto_align_psd_pdf**: 中心固定の 5 段階スケール探索（重なり領域のみのSAD最小化）。サムネ最大1000pxで探索、フル解像度で最終差分計算
 - **グローバル設定**: scale/offset/anchor は全ペアに反映。変更時は他のペアを invalidate して再処理
 - **位置調整UI**: DiffViewer ツールバーの「位置調整」ポップアップ。X/Y オフセット (±1/±10px)、倍率 (±0.01)、基準切替、自動位置合わせ、リセットボタン
+- **整列前は差分検知しない（差分2回計算の回避 / 2026-05-19）**: `psdPdfReady` ゲート。
+  psd-pdf 入場時・多ページ展開時に `false`。`false` の間は「自動処理」useEffect の
+  psd-pdf 分岐が return して**何も差分計算しない**（旧: 読込時に等倍 scale 1.0 で全ペア
+  差分→自動位置合わせ後に再度全ペア差分＝2回）。`autoAlignPsdPdf` / `applyPsdPdfAlignment`
+  / `processAllPsdPdf` で `true` にして以降の pending を処理。DiffViewer の「自動位置合わせ」
+  ボタンは status=pending でも押せるよう disabled 条件を `!fileA||!fileB` のみに緩和
+  （ゲート中はペアが pending のままなので、done/checked 条件だと押せず詰む）
 
 ## color-mono モードのアーキテクチャ
 カラー原稿 (RGB 350dpi) とモノクロ原稿 (Grayscale 600dpi) を比較するモード。
@@ -125,8 +182,98 @@ PSDが選択可能な場面（テキスト照合 / 差分ビュー / 並列ビ�
 
 ## Cargo.toml最適化
 - `[profile.dev] opt-level = 2` - dev buildでも画像処理を最適化
-- `[profile.dev.package.image]` / `[profile.dev.package.psd]` に `opt-level = 3`
+- `[profile.dev.package.image]` / `[profile.dev.package.psd]` / `[profile.dev.package.fast_image_resize]` に `opt-level = 3`（fast_image_resize は SIMD なので最適化必須）
 - release: `opt-level = 3`, `lto = "thin"`, `codegen-units = 1`
+
+## 差分処理の高速化（speed lab で検証後に移植 / 2026-05-15）
+PSD×PSD の処理速度を `KENBAN/処理速度研究/psd-speed-lab` で計測・検証し、効果を確認した3点を本体に移植済み。4961×7016 PSD で total ~1655ms → ~335ms（**約5倍速**）を実測。
+
+### ① decode_psd_fallback の並列化（全PSDモード共通・最重要）
+- **RLE展開**: スキャンライン開始位置を prefix-sum で先に確定し `ch_data.par_chunks_mut(width)` で行並列 PackBits 展開（カラー decomp ~70ms → ~12ms, 約6倍）
+- **RGBA組立**: `for i in 0..pixel_count` のスカラーループ（グレースケールで ~210ms のボトルネック）を `rgba.par_chunks_mut(4).enumerate()` でピクセル並列化（~210ms → ~10ms, 約20倍）
+- `decode_psd_fallback` は全 PSD デコード経路（parse_psd / decode_psd_cached / 全 compute_diff_*）が通るので全モードに効く
+
+### ② fast_image_resize (SIMD) 化 + A/B 並列リサイズ
+- `fast_downscale_to_rgba(img, w, h, filter)` ヘルパー追加。`image` crate の単スレッド `resize_exact` を SIMD の `fast_image_resize` に置換、戻り値を `RgbaImage` 直接にして後段 `to_rgba8()` の二度手間も解消。元が Rgba8 ならゼロコピー参照
+- フィルタ: 通常 `Bilinear`(≒Triangle)、psd-tiff の PSD 側のみ `CatmullRom`（PSD→TIFF 出力検証の画質維持）
+- `compute_diff_simple` / `compute_diff_heatmap` / `compute_diff_color_mono` の resize 段を `rayon::join` で A/B 並列＋fast 化（resize ~1050ms → ~131ms, 約8倍）。diff 後に `RgbaImage` を `DynamicImage::ImageRgba8(..)` へ move（コピーなし）してエンコード、full-res バッファは即 `drop`
+- **Phase1 `check_diff_simple` / `check_diff_heatmap` / `check_diff_color_mono` にも同じ fast+並列リサイズを適用済み**（2026-05-15 修正）。本体は全ペアに Phase1 check を走らせるため、ここを旧 `downscale_if_needed` のままにすると compute 側を速くしても全体が倍以上遅くなる（speed lab は compute のみ呼ぶので顕在化しなかった罠）。`downscale_if_needed` は全置換され `#[allow(dead_code)]` で残置
+
+### ③ PDF×PDF 高速化（pdf-pdf 専用 / 2026-05-15、speed lab 実測 39.5s→19.1s ≒2倍）
+- `compute_pdf_diff_all(path_a, path_b, dpi, threshold) -> Vec<DiffSimpleResult>` を追加。
+  従来 `compute_pdf_diff` はページ毎に `load_pdf_from_file()` で **PDF全体を毎回再パース**（12ページ=12回フルパース）していた無駄を、**A/B 各1回ロード**に削減
+- さらに `std::thread::scope` で **PDFium レンダ(逐次・スレッド非安全)** と **後段 resize/diff/encode(純CPU=`pdf_postprocess_page`)** をパイプライン化。ページN の後段をワーカースレッドで実行しつつメインは N+1 のレンダへ進む
+- 全ページ完了後に Vec を一括返却（ストリーミング配信はしない＝「最初にまとめて処理」）
+- フロント: `App.tsx` の pdf-pdf 背景処理（`calculateAllPages`）を「ページ毎 `compute_pdf_diff` ループ」→「`compute_pdf_diff_all` 1回呼びで全ページ `diffCache` 一括投入」に置換。1ページ目だけ従来どおり `compute_pdf_diff` で即表示（UX維持）、残りを一括計算。`inFlightPagesRef`/`setPdfComputingPages`（ページ毎スピナー）は不要になり削除
+- psd-pdf / 並列ビューの PDF（`render_pdf_page`, 150dpi 単ページ・オンデマンド）は用途が異なるため変更せず
+
+### ④ 分割ビューアー（ParallelViewer）にも fast リサイズ適用
+- `resize_and_write_to_temp`（`decode_and_resize_image` が使う表示画像リサイズ）の `image` crate 単スレッド `resize(Triangle)` を `fast_downscale_to_rgba`(SIMD, Bilinear≒Triangle) に置換。差分側と同じ高速経路
+- 並列ビューの PSD は `parse_psd → decode_psd_robust`（①の `decode_psd_fallback` 並列化を共有）で自動的に高速化済み
+
+### ⑤ PSD×PDF 高速化（psd-pdf 専用 / 2026-05-18、speed lab 実測 3761→1931ms ≒2倍）
+**背景**: psd-pdf だけ `preview_long_edge` が未配線で、高速(1500)/標準(2500) を切替えても
+PDF を常に PSDフル寸法相当の高DPIでレンダ＋フルPSDをJPEGエンコードしており「高速モードでも遅い」状態だった。
+
+- **①preview解像度化（最大効果・speed lab実証）**:
+  - `decode_reference_for_psd_compare` に `preview_long_edge: Option<u32>` を追加。preview指定時は
+    `calc_preview_dims(psd_w,psd_h,preview)` 基準でPDFをレンダ（DPI下限を 150→36/72 に緩和、上限600）、
+    画像参照も `fast_downscale_to_rgba` で縮小
+  - `compute_diff_psd_pdf` / `check_diff_psd_pdf` に `preview_long_edge` 追加。PSDも preview 縮小版
+    (`psd_use`) を src_a エンコード／anchor=psd キャンバスに使用。キャッシュキーに preview 長辺(`pv`)を付与
+    （preview モード切替の stale 回避）
+  - **`auto_align_psd_pdf` は意図的に `None`（フル寸法）で参照デコード**。preview縮小版で探索すると
+    線画ディテールが落ちて適正スケールを取り損ねるため（探索精度優先）
+  - フロント [src/App.tsx]: `compute_diff_psd_pdf` / `check_diff_psd_pdf` invoke に `previewLongEdge` を渡す
+    （`previewLongEdgeByMode['psd-pdf']` 既定2500。値は既に存在したが未配線だった）
+- **②多ページパイプライン**:
+  - `compute_diff_psd_pdf_all`（新規）+ `psd_pdf_postprocess`（後段ヘルパー）。PSD を1回デコード
+    （キャッシュ＋preview縮小をArc共有）＋ PDF を1回ロードし、`std::thread::scope` で
+    PDFiumレンダ(逐次)と後段(位置合わせ/差分/encode、純CPU)をパイプライン化。全ページ Vec 一括返却。
+    scale/offset/anchor は全ページ共通（本体グローバル設定と同一運用）
+  - フロント: `processAllPsdPdf` 内に `tryBatchPsdPdf` を追加。全ペアが「同一PSD×同一PDFで
+    pdfPage=0..N-1 連番」（=1PSD×多ページPDF展開）なら `compute_diff_psd_pdf_all` を1回呼び。
+    条件に合わなければ従来の per-page `processPair` 逐次にフォールバック（無改変・無リスク）
+- 旧 `decode_reference_for_psd_compare(...,page)` 3引数 → 4引数化。全呼び出し元更新済み
+
+### ⑥ psd-pdf「整列まで差分検知しない」+ 並列ビュー高速化/UI改修（2026-05-19）
+- **psd-pdf 整列ゲート（差分2回計算の回避）**: `psdPdfReady` state。psd-pdf 入場/多ページ展開で
+  `false`、`false` の間は「自動処理」useEffect の psd-pdf 分岐 + `diffDetectionState`
+  オーバーレイ + Sidebar 進捗バー/`isProcessing` を全て抑止（読込時の等倍差分→整列後再差分の
+  二重計算を排除）。`autoAlignPsdPdf`/`applyPsdPdfAlignment`/`processAllPsdPdf` で `true`。
+  Sidebar/DiffViewer に `psdPdfAwaitingAlignment` prop で「位置合わせ待ち」表示。
+  DiffViewer 位置調整ポップアップ: 自動位置合わせを最下部へ移動し OK 化（押下＝整列＋差分検知開始）
+- **#2 並列ビュー PDF 一括レンダ**: `render_pdf_pages_batch(path,dpi,requests:[{page,splitSide}])`
+  新設（`PdfPageImage` を Vec 返却）。PDF を1回ロード→ユニークページのみ1回レンダ（pdfium 逐次）
+  →crop/encode は rayon 並列。cache キーは `render_pdf_page` と同一で再利用。フロントの
+  並列ビュー背景プリレンダを「ページ毎 `render_pdf_page`（毎回 PDF 開き直し）」→「PDFパス毎
+  `render_pdf_pages_batch` 1回」に置換
+- **#3 並列ビュー「PDF構成」ドロップダウン**: 旧「単ページ化」ボタン＋hover「1P単独」を
+  3モード選択（①表紙だけ単独+見開き分割 ②見開きを左右分割 ③そのまま表示）＋「A/B両方に適用」
+  ＋「展開後 N→M表示」へ置換（[ParallelViewer.tsx] `renderPdfLayoutControl`）。内部状態は
+  従来の `spreadSplitMode{A,B}`/`firstPageSingle{A,B}` 据え置き（モードから導出/設定）。
+  `expandPdfToParallelEntries` に `forceFirstSingle` 引数追加（モード変更を stale なく即適用）。
+  既定を①に変更（`spreadSplitMode{A,B}` 初期値 false→true）
+
+### ⑦ encode 高速化（jpeg-encoder / 2026-05-19）
+- `encode_to_jpeg_temp`（[src-tauri/src/lib.rs] 全モードの src_a/src_b/processed_a 生成）の
+  `image` crate JPEG エンコーダを **`jpeg-encoder`（純Rust + ランタイムSIMD）** に置換。
+  `Cargo.toml`: `jpeg-encoder = "0.6"` ＋ `[profile.dev.package.jpeg-encoder] opt-level=3`
+- turbojpeg は libjpeg-turbo の C ビルド（cmake/nasm）が必要で当環境に無いため不採用。
+  jpeg-encoder は C 依存なし＝ネイティブビルド破損リスクなし。speed lab にも同適用済み
+- `encode_rgba_to_png_temp`（差分 PNG）は対象外（PNG のまま）
+
+### ⑧ 並列ビュー 同期/非同期トグル修正（2026-05-19）
+- 旧: 非同期→「同期」押下で再同期ポップアップ。ポータル内ツールバーの重なり/クリップで
+  表示・クリックできず「同期に戻れない」不具合 → 暫定で即・ページ揃え固定にしたが
+  「ずらした現在を基準」が選べない退行
+- 確定: 元の2択を **`document.body` への `createPortal`**（help パネルと同じ
+  `getBoundingClientRect` 方式、`syncBtnRef`/`syncAnchor`）で確実表示に。選択肢を
+  「**ページを揃える**（左右同ページ）」「**ずらした現在を基準にする**（ページ差を保持）」へ
+  文言明確化。キーボードは従来どおり S=維持同期 / Shift+S=揃えて同期
+
+### 計測・今後
+`psd-speed-lab`（`KENBAN/処理速度研究/psd-speed-lab`）は PSD×PSD / PDF×PDF / PSD×PDF 対応。段階別 ms を UI と stderr `[PERF]`/`[PERF-DEC]`/`[PERF-PDF]`/`[PERF-PSDPDF]` に出す。本体へは speed lab で実測確認してから移植する運用（jpeg-encoder は当環境のネイティブビルド事情からユーザー承認で本体直接適用）。**差分↔並列 横断の高速化候補（未着手）**: A=`parse_psd` も `decode_psd_cached` 経由に統一＋容量拡大 / B=`transferDiffToParallelView` で差分側の生成済み画像を再利用 / C=(path,mtime,page,dpi) キーの PDF ページラスタ共有キャッシュ / D=共通プリフェッチワーカー。残 encode 候補は `turbojpeg`（要 cmake+nasm）。
 
 ## UI設計 — "Quiet Authority"
 デザインコンセプト: プロフェッショナルリファレンスモニターのマットブラックベゼルのように、存在するが画像の邪魔をしないUI。

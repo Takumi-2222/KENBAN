@@ -25,6 +25,7 @@ interface SidebarProps {
   setInitialModeSelect: (v: boolean) => void;
   transferDiffToParallelView: () => void;
   compareMode: CompareMode;
+  psdPdfAwaitingAlignment?: boolean;
   modeLabels: ModeLabels;
   filesA: File[];
   filesB: File[];
@@ -38,6 +39,8 @@ interface SidebarProps {
   setFilterDiffOnly: (v: boolean) => void;
   showMarkers: boolean;
   setShowMarkers: (v: boolean) => void;
+  previewLongEdge: number | null;
+  setPreviewLongEdge: (v: number | null) => void;
   settingsOpen: boolean;
   setSettingsOpen: (v: boolean) => void;
   photoshopPath: string | null;
@@ -109,6 +112,7 @@ export default function Sidebar({
   setInitialModeSelect,
   transferDiffToParallelView,
   compareMode,
+  psdPdfAwaitingAlignment,
   modeLabels,
   filesA,
   filesB,
@@ -122,6 +126,8 @@ export default function Sidebar({
   setFilterDiffOnly,
   showMarkers,
   setShowMarkers,
+  previewLongEdge,
+  setPreviewLongEdge,
   settingsOpen,
   setSettingsOpen,
   photoshopPath,
@@ -178,7 +184,9 @@ export default function Sidebar({
     diff: pairs.filter(p => (p.status === 'done' || p.status === 'checked') && p.hasDiff).length,
     pending: pairs.filter(p => p.status === 'pending' && p.fileA && p.fileB).length
   };
-  const isProcessing = pairs.some(p => {
+  // psd-pdf 整列待ち中は「解析中」ではない（差分検知は走っていない）。
+  // ペアリスト灰色化＋「解析中はファイル切替できません」を出さず、選択可能にする。
+  const isProcessing = !psdPdfAwaitingAlignment && pairs.some(p => {
     if (p.status === 'loading' || p.status === 'checked' || p.status === 'rendering') return true;
     if (p.status === 'pending' && p.fileA && p.fileB && (compareMode !== 'psd-tiff' || cropBounds)) return true;
     return false;
@@ -374,7 +382,14 @@ export default function Sidebar({
               </div>
             )}
 
-            {compareMode !== 'text-verify' && stats.pending > 0 && <div className="mt-2 w-full bg-white/[0.06] rounded-full h-1"><div className="bg-action h-1 rounded-full transition-all shadow-[0_0_6px_rgba(107,138,255,0.3)]" style={{ width: `${(stats.done / stats.total) * 100}%` }} /></div>}
+            {psdPdfAwaitingAlignment ? (
+              <p className="mt-2 text-[10px] text-amber-400/80 text-center tracking-wide leading-relaxed">
+                位置合わせ待ち<br />
+                「位置調整 → 自動位置合わせ」で差分検知を開始します
+              </p>
+            ) : (
+              compareMode !== 'text-verify' && stats.pending > 0 && <div className="mt-2 w-full bg-white/[0.06] rounded-full h-1"><div className="bg-action h-1 rounded-full transition-all shadow-[0_0_6px_rgba(107,138,255,0.3)]" style={{ width: `${(stats.done / stats.total) * 100}%` }} /></div>
+            )}
           </div>
 
           {compareMode === 'text-verify' ? (
@@ -419,6 +434,7 @@ export default function Sidebar({
               <span className="flex items-center gap-1">
                 <Settings size={12} />設定
                 {filterDiffOnly && <span className="text-action ml-1">フィルター中</span>}
+                {previewLongEdge !== null && <span className="text-amber-300 ml-1">{previewLongEdge}px</span>}
                 {showMarkers && <span className="text-cyan-400 ml-1">マーカーON</span>}
               </span>
               {settingsOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
@@ -455,6 +471,36 @@ export default function Sidebar({
                   <Target size={12} className="text-cyan-400" />
                   差分箇所を丸枠で強調
                 </label>
+
+                {/* 解像度適応プレビュー: 差分計算/表示の処理量を削減 */}
+                <div className="pt-1">
+                  <div className="text-[11px] text-neutral-500 mb-1.5 flex items-center justify-between">
+                    <span>処理解像度 <span className="text-neutral-600">({compareMode})</span></span>
+                    {previewLongEdge !== null && <span className="text-amber-300">{previewLongEdge}px</span>}
+                  </div>
+                  <p className="text-[10px] text-neutral-600 mb-1 leading-snug">この設定は比較モードごとに個別保持されます</p>
+                  <div className="flex gap-1 bg-neutral-950 rounded-lg p-0.5">
+                    <button
+                      onClick={() => setPreviewLongEdge(1500)}
+                      className={`flex-1 text-[10px] py-1 rounded-md transition-all ${previewLongEdge === 1500 ? 'bg-neutral-700 text-amber-200 shadow-sm' : 'text-neutral-500 hover:text-neutral-300'}`}
+                      title="長辺1500pxに縮小して差分計算 (最速)"
+                    >高速</button>
+                    <button
+                      onClick={() => setPreviewLongEdge(2500)}
+                      className={`flex-1 text-[10px] py-1 rounded-md transition-all ${previewLongEdge === 2500 ? 'bg-neutral-700 text-amber-200 shadow-sm' : 'text-neutral-500 hover:text-neutral-300'}`}
+                      title="長辺2500pxに縮小して差分計算 (推奨)"
+                    >標準</button>
+                    <button
+                      onClick={() => setPreviewLongEdge(null)}
+                      className={`flex-1 text-[10px] py-1 rounded-md transition-all ${previewLongEdge === null ? 'bg-neutral-700 text-neutral-100 shadow-sm' : 'text-neutral-500 hover:text-neutral-300'}`}
+                      title="元解像度で差分計算 (精度最大、低速)"
+                    >フル</button>
+                  </div>
+                  <p className="text-[10px] text-neutral-600 mt-1 leading-snug">
+                    縮小してから差分計算することで処理量を最大10倍削減。視認上の差はほぼ無し
+                  </p>
+                </div>
+
                 <button onClick={onClear} className="w-full py-1 bg-red-900/30 hover:bg-red-900/50 text-red-400 rounded-md text-xs transition-colors">クリア</button>
               </div>
             )}

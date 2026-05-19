@@ -15,6 +15,7 @@ interface DiffViewerProps {
   pairs: FilePair[];
   selectedIndex: number;
   compareMode: CompareMode;
+  psdPdfAwaitingAlignment?: boolean;
   viewMode: ViewMode;
   setViewMode: (v: ViewMode) => void;
   showMarkers: boolean;
@@ -121,6 +122,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
     pairs,
     selectedIndex,
     compareMode,
+    psdPdfAwaitingAlignment,
     viewMode,
     setViewMode,
     currentPage,
@@ -318,15 +320,6 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                             </button>
                           </div>
                         </div>
-                        <button
-                          onClick={() => { setShowAlignPopup(false); autoAlignPsdPdf(); }}
-                          disabled={autoAligning || !currentPair || (currentPair.status !== 'done' && currentPair.status !== 'checked')}
-                          className="w-full px-2.5 py-1.5 rounded-md bg-[rgba(124,156,196,0.15)] hover:bg-[rgba(124,156,196,0.25)] text-blue-300 border border-[rgba(124,156,196,0.2)] disabled:opacity-30 flex items-center justify-center gap-1.5 transition-colors"
-                          title="最適な縮尺/位置を自動探索"
-                        >
-                          {autoAligning ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
-                          {autoAligning ? '自動位置合わせ中...' : '自動位置合わせ'}
-                        </button>
                         <div className="flex items-center gap-2">
                           <span className="w-8 text-neutral-500">X</span>
                           <button onClick={() => setPsdPdfOffsetX(v => v - 10)} className="px-1.5 py-0.5 rounded bg-neutral-700 hover:bg-neutral-600 text-neutral-300">−10</button>
@@ -383,6 +376,16 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                           className="px-2 py-1 rounded-md bg-neutral-700 hover:bg-neutral-600 text-neutral-300 flex items-center justify-center gap-1.5 text-xs"
                         >
                           <RotateCcw size={12} />リセット
+                        </button>
+                        <div className="border-t border-white/[0.08] my-1" />
+                        <button
+                          onClick={() => { setShowAlignPopup(false); autoAlignPsdPdf(); }}
+                          disabled={autoAligning || !currentPair || !currentPair.fileA || !currentPair.fileB}
+                          className="w-full px-2.5 py-2 rounded-md bg-[rgba(124,156,196,0.18)] hover:bg-[rgba(124,156,196,0.28)] text-blue-300 border border-[rgba(124,156,196,0.25)] disabled:opacity-30 flex items-center justify-center gap-1.5 text-sm font-medium transition-colors"
+                          title="自動で最適な縮尺/位置を探索し、その位置で全ページの差分検知を開始します"
+                        >
+                          {autoAligning ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                          {autoAligning ? '自動位置合わせ中...' : '自動位置合わせして差分検知（OK）'}
                         </button>
                       </div>
                     </div>
@@ -541,7 +544,22 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                 <div className="text-red-400 text-center"><p>読み込みに失敗しました</p><p className="text-xs text-neutral-600 mt-2">{currentPair.errorMessage}</p></div>
               ) : currentPair.status === 'pending' ? (
                 <div className="flex flex-col items-center w-full max-w-3xl">
-                  {currentPair.fileA && currentPair.fileB && (compareMode !== 'psd-tiff' || cropBounds) ? (
+                  {psdPdfAwaitingAlignment && currentPair.fileA && currentPair.fileB ? (
+                    <div className="flex flex-col items-center gap-4 text-center">
+                      <Move size={40} className="opacity-30 text-pink-400" />
+                      <div>
+                        <p className="text-neutral-300">位置合わせ待ち</p>
+                        <p className="text-xs text-neutral-600 mt-1">読み込み時の無駄な差分計算を行いません。位置を整えてから差分検知します。</p>
+                      </div>
+                      <button
+                        onClick={() => setShowAlignPopup(true)}
+                        className="px-3 py-1.5 rounded-md bg-[rgba(124,156,196,0.15)] hover:bg-[rgba(124,156,196,0.25)] text-blue-300 border border-[rgba(124,156,196,0.2)] flex items-center gap-1.5 text-sm transition-colors"
+                      >
+                        <Move size={14} />位置を合わせて差分検知
+                      </button>
+                      <p className="text-[10px] text-neutral-600">位置調整パネルで合わせ、「この位置で差分検知」を押すと開始します</p>
+                    </div>
+                  ) : currentPair.fileA && currentPair.fileB && (compareMode !== 'psd-tiff' || cropBounds) ? (
                     <><Loader2 size={48} className="animate-spin mb-4 opacity-50 text-action" /><p className="text-neutral-600">順番待ち...</p></>
                   ) : (
                     <>
