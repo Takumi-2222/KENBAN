@@ -226,6 +226,27 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
   const currentMarkers = getCurrentMarkers();
   const modeLabels = getModeLabels(compareMode);
 
+  const isPdfFile = (file: FileWithPath | null | undefined) => {
+    if (!file) return false;
+    const name = file.name.toLowerCase();
+    const path = file.filePath?.toLowerCase() || '';
+    return file.type === 'application/pdf' || name.endsWith('.pdf') || path.endsWith('.pdf');
+  };
+
+  const getMojiQPdfFile = (): FileWithPath | null => {
+    if (!currentPair) return null;
+    if (compareMode === 'pdf-pdf') {
+      return ((viewMode === 'B') ? currentPair.fileB : currentPair.fileA) as FileWithPath | null;
+    }
+    if (compareMode === 'psd-pdf') {
+      return currentPair.fileB as FileWithPath | null;
+    }
+    return null;
+  };
+
+  const mojiQPdfFile = getMojiQPdfFile();
+  const mojiQPage = compareMode === 'psd-pdf' ? (currentPair?.pdfPage ?? 0) + 1 : currentPage;
+
 
 
   const toolbarContent = (
@@ -389,29 +410,27 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                   )}
                 </div>
               )}
-              {compareMode === 'pdf-pdf' && (
+              {(compareMode === 'pdf-pdf' || compareMode === 'psd-pdf') && (
                 <button
                   onClick={() => {
-                    const pdfFile = (viewMode === 'A' || viewMode === 'A-full' || viewMode === 'diff')
-                      ? currentPair?.fileA as FileWithPath | null
-                      : currentPair?.fileB as FileWithPath | null;
-                    if (pdfFile?.filePath) {
+                    const pdfFile = mojiQPdfFile;
+                    if (pdfFile?.filePath && isPdfFile(pdfFile)) {
                       releaseMemoryBeforeMojiQ();
                       setTimeout(() => {
-                        invoke('open_pdf_in_mojiq', { pdfPath: pdfFile.filePath, page: currentPage })
+                        invoke('open_pdf_in_mojiq', { pdfPath: pdfFile.filePath, page: mojiQPage })
                           .catch((err: unknown) => {
                             console.error('[MojiQ] Error:', err);
                             alert(`MojiQの起動に失敗しました:\n${err}`);
                           });
                       }, 100);
-                    } else {
+                    } else if (pdfFile && isPdfFile(pdfFile)) {
                       console.warn('[MojiQ] DiffViewer: filePath is undefined', pdfFile);
                       alert('MojiQ連携エラー: PDFファイルのパスが取得できませんでした。ファイルを再読み込みしてください。');
                     }
                   }}
-                  disabled={!currentPair || currentPair.status !== 'done'}
+                  disabled={!currentPair || currentPair.status !== 'done' || !isPdfFile(mojiQPdfFile)}
                   className="px-2.5 py-1.5 text-xs rounded-md bg-[rgba(196,140,156,0.15)] hover:bg-[rgba(196,140,156,0.25)] text-rose-400 border border-[rgba(196,140,156,0.2)] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 transition-colors"
-                  title="MojiQで開く (Q)"
+                  title={compareMode === 'psd-pdf' ? 'PDFをMojiQで開く (Q)' : 'MojiQで開く (Q)'}
                 >
                   <FileText size={12} />MojiQ
                 </button>
@@ -503,7 +522,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
           <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">↑ / ↓</span><span>{compareMode === 'pdf-pdf' ? 'ページ移動' : 'ファイル選択'}</span></div>
           <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">J / K</span><span>差分ファイル移動</span></div>
           {(compareMode === 'psd-psd' || compareMode === 'psd-tiff') && <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">P</span><span>Photoshopで開く</span></div>}
-          {compareMode === 'pdf-pdf' && <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">Q</span><span>MojiQで開く</span></div>}
+          {(compareMode === 'pdf-pdf' || compareMode === 'psd-pdf') && <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">Q</span><span>MojiQで開く（PDF）</span></div>}
           <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">C</span><span>スクリーンショット</span></div>
           <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">F11</span><span>全画面表示</span></div>
           <div className="border-t border-white/[0.06] my-2" />

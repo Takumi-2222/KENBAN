@@ -10,13 +10,14 @@ import {
   RefreshCw,
   Maximize2,
   HelpCircle,
-  BookOpen,
   Loader2,
   Edit3,
   Eye,
   EyeOff,
   Menu,
   Download,
+  ChevronDown,
+  Check,
 } from 'lucide-react';
 import type { ParallelFileEntry } from '../types';
 
@@ -66,10 +67,12 @@ interface ParallelViewerProps {
   setFirstPageSingleB: (v: boolean) => void;
   showSyncOptions: boolean;
   showPsSelectPopup: boolean;
+  showCbSelectPopup: boolean;
   showMojiQSelectPopup: boolean;
   showFolderSelectPopup: boolean;
   setShowSyncOptions: (v: boolean) => void;
   setShowPsSelectPopup: (v: boolean) => void;
+  setShowCbSelectPopup: (v: boolean) => void;
   setShowMojiQSelectPopup: (v: boolean) => void;
   setShowFolderSelectPopup: (v: boolean) => void;
   instructionButtonsHidden: boolean;
@@ -85,7 +88,7 @@ interface ParallelViewerProps {
   parallelPdfImageB: string | null;
   parallelMaxIndex: number;
   releaseMemoryBeforeMojiQ: () => void;
-  expandPdfToParallelEntries: (pdfPath: string, side: 'A' | 'B', droppedFile?: File, forceSplitMode?: boolean) => void;
+  expandPdfToParallelEntries: (pdfPath: string, side: 'A' | 'B', droppedFile?: File, forceSplitMode?: boolean, forceFirstPageSingle?: boolean) => void;
   refreshParallelView: () => void;
   openInPhotoshop: (path: string) => void;
   openInComicBridge: (path: string) => void;
@@ -143,15 +146,14 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
     setFirstPageSingleB,
     showSyncOptions,
     showPsSelectPopup,
+    showCbSelectPopup,
     showMojiQSelectPopup,
-    showFolderSelectPopup,
     setShowSyncOptions,
     setShowPsSelectPopup,
+    setShowCbSelectPopup,
     setShowMojiQSelectPopup,
-    setShowFolderSelectPopup,
     instructionButtonsHidden,
     setInstructionButtonsHidden,
-    openFolderInExplorer,
     toggleFullscreen,
     setParallelCapturedImageA,
     setParallelCapturedImageB,
@@ -176,6 +178,70 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
   // ローカルstate: ドラッグオーバー側（HTMLドラッグ + Tauriネイティブドラッグを統合）
   const [localDragOverSide, setLocalDragOverSide] = useState<string | null>(null);
   const dragOverSide = localDragOverSide || tauriDragOverSide;
+  const [pdfLayoutMenuSide, setPdfLayoutMenuSide] = useState<'A' | 'B' | null>(null);
+  const [applyPdfLayoutBothSides, setApplyPdfLayoutBothSides] = useState(true);
+
+  type PdfLayoutMode = 'cover-spread' | 'spread' | 'single';
+
+  const getPdfLayoutMode = (splitMode: boolean, firstSingle: boolean): PdfLayoutMode => {
+    if (!splitMode) return 'single';
+    return firstSingle ? 'cover-spread' : 'spread';
+  };
+
+  const getPdfLayoutLabel = (mode: PdfLayoutMode) => {
+    switch (mode) {
+      case 'cover-spread':
+        return '表紙あり見開き';
+      case 'spread':
+        return '見開き分割';
+      case 'single':
+        return 'そのまま表示';
+    }
+  };
+
+  const getExpandedPdfEntryCount = (pageCount: number, mode: PdfLayoutMode) => {
+    if (mode === 'single') return pageCount;
+    if (mode === 'cover-spread') return pageCount <= 0 ? 0 : 1 + Math.max(0, pageCount - 1) * 2;
+    return pageCount * 2;
+  };
+
+  const getPdfEntriesForSide = (side: 'A' | 'B') => side === 'A' ? parallelFilesA : parallelFilesB;
+  const getPdfLayoutModeForSide = (side: 'A' | 'B') => getPdfLayoutMode(
+    side === 'A' ? spreadSplitModeA : spreadSplitModeB,
+    side === 'A' ? firstPageSingleA : firstPageSingleB,
+  );
+
+  const applyPdfLayoutMode = useCallback((side: 'A' | 'B', mode: PdfLayoutMode) => {
+    const splitMode = mode !== 'single';
+    const firstSingle = mode === 'cover-spread';
+    const sides: Array<'A' | 'B'> = applyPdfLayoutBothSides ? ['A', 'B'] : [side];
+
+    sides.forEach(targetSide => {
+      if (targetSide === 'A') {
+        setSpreadSplitModeA(splitMode);
+        setFirstPageSingleA(firstSingle);
+      } else {
+        setSpreadSplitModeB(splitMode);
+        setFirstPageSingleB(firstSingle);
+      }
+
+      const firstEntry = getPdfEntriesForSide(targetSide)[0];
+      if (firstEntry?.path && firstEntry.type === 'pdf') {
+        expandPdfToParallelEntries(firstEntry.path, targetSide, firstEntry.pdfFile, splitMode, firstSingle);
+      }
+    });
+
+    setPdfLayoutMenuSide(null);
+  }, [
+    applyPdfLayoutBothSides,
+    expandPdfToParallelEntries,
+    parallelFilesA,
+    parallelFilesB,
+    setFirstPageSingleA,
+    setFirstPageSingleB,
+    setSpreadSplitModeA,
+    setSpreadSplitModeB,
+  ]);
 
   // ハンバーガーメニュー（ショートカット説明）
   const helpButtonRef = useRef<HTMLButtonElement>(null);
@@ -312,26 +378,95 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
     })();
   }, [parallelPdfImageA, parallelPdfImageB, drawToCanvasWithScale, measureContainer]);
 
-  // ファイルパスから親フォルダパスを取得
-  const getDirectoryFromPath = useCallback((filePath: string): string | null => {
-    const parts = filePath.split(/[/\\]/);
-    parts.pop();
-    return parts.length > 0 ? parts.join('/') : null;
-  }, []);
-
-  // 並列ビューのフォルダパスを取得
-  const getParallelFolderPath = useCallback((side: 'A' | 'B'): string | null => {
-    const folderPath = side === 'A' ? parallelFolderA : parallelFolderB;
-    const files = side === 'A' ? parallelFilesA : parallelFilesB;
-    if (!folderPath) return null;
-    // PDFの場合はファイルパスなので親フォルダを取得
-    if (files.length > 0 && files[0].type === 'pdf') {
-      return getDirectoryFromPath(folderPath);
-    }
-    return folderPath;
-  }, [parallelFolderA, parallelFolderB, parallelFilesA, parallelFilesB, getDirectoryFromPath]);
-
   const hasPsdInParallel = parallelFilesA.some(f => f.type === 'psd') || parallelFilesB.some(f => f.type === 'psd');
+
+  const renderPdfCompositionControl = (side: 'A' | 'B') => {
+    const entries = getPdfEntriesForSide(side);
+    const firstEntry = entries[0];
+    if (!firstEntry || firstEntry.type !== 'pdf') return null;
+
+    const currentMode = getPdfLayoutModeForSide(side);
+    const pageCount = firstEntry.pageCount ?? entries.length;
+    const expandedCount = getExpandedPdfEntryCount(pageCount, currentMode);
+    const alignClass = side === 'A' ? 'left-0' : 'right-0';
+    const options: Array<{ mode: PdfLayoutMode; title: string; description: string }> = [
+      {
+        mode: 'cover-spread',
+        title: '表紙だけ単独 + 見開き分割',
+        description: '1ページ目は表紙としてそのまま、2ページ目以降を右→左に分割',
+      },
+      {
+        mode: 'spread',
+        title: '見開きを左右分割',
+        description: 'すべてのPDFページを右ページ、左ページに分けて表示',
+      },
+      {
+        mode: 'single',
+        title: 'そのまま表示',
+        description: 'PDFの1ページを1枚として表示',
+      },
+    ];
+
+    return (
+      <div className="ml-2 relative">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setPdfLayoutMenuSide(pdfLayoutMenuSide === side ? null : side);
+          }}
+          className="h-8 px-3 rounded-md border border-[rgba(196,164,124,0.22)] bg-[rgba(196,164,124,0.12)] text-orange-200 hover:bg-[rgba(196,164,124,0.18)] transition-colors flex items-center gap-2 font-semibold text-[13px] shadow-[0_0_0_1px_rgba(0,0,0,0.25)]"
+          title="PDF構成を選択"
+        >
+          <span>PDF構成: {getPdfLayoutLabel(currentMode)}</span>
+          <ChevronDown size={14} className={`transition-transform ${pdfLayoutMenuSide === side ? 'rotate-180' : ''}`} />
+        </button>
+
+        {pdfLayoutMenuSide === side && (
+          <div
+            className={`absolute top-full ${alignClass} mt-2 z-50 w-[520px] max-w-[calc(100vw-32px)] rounded-lg border border-white/[0.08] bg-neutral-900/95 backdrop-blur-md shadow-[0_16px_48px_rgba(0,0,0,0.55)] p-4 text-neutral-200`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm font-semibold text-neutral-100 mb-3">PDF構成</div>
+            <div className="space-y-2">
+              {options.map(option => {
+                const selected = option.mode === currentMode;
+                return (
+                  <button
+                    key={option.mode}
+                    onClick={() => applyPdfLayoutMode(side, option.mode)}
+                    className={`w-full text-left rounded-lg border p-3 transition-colors flex gap-3 ${selected ? 'border-[rgba(196,164,124,0.35)] bg-[rgba(196,164,124,0.12)]' : 'border-transparent hover:border-white/[0.08] hover:bg-white/[0.04]'}`}
+                  >
+                    <span className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded-full border ${selected ? 'border-orange-200 bg-[rgba(196,164,124,0.20)] text-orange-200' : 'border-white/[0.20] text-transparent'}`}>
+                      <Check size={13} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold text-neutral-100">{option.title}</span>
+                      <span className="block mt-1 text-xs leading-5 text-neutral-400">{option.description}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-white/[0.08] flex items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-xs text-neutral-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={applyPdfLayoutBothSides}
+                  onChange={(e) => setApplyPdfLayoutBothSides(e.target.checked)}
+                  className="h-4 w-4 rounded border-white/[0.12] bg-neutral-800 accent-[#6b8aff]"
+                />
+                A/B両方に適用
+              </label>
+              <div className="rounded-md border border-white/[0.08] bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-neutral-300">
+                展開後: {pageCount}ページ → {expandedCount}表示
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // ヘッダーのスロットに portal で描画するツールバー（Photoshop / CB写植 / MojiQ / フォルダ / 同期 / 更新 / 閲覧 / ハンバーガー）
   const toolbarContent = (
@@ -404,21 +539,61 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                 const currentFileB = parallelFilesB[parallelIndexB];
                 const hasPsdA = currentFileA?.type === 'psd';
                 const hasPsdB = currentFileB?.type === 'psd';
+                const hasBothPsd = hasPsdA && hasPsdB;
                 if (!hasPsdA && !hasPsdB) return null;
                 return (
-                  <button
-                    onClick={() => {
-                      const active = parallelActivePanel === 'A' ? currentFileA : currentFileB;
-                      const fallback = hasPsdA ? currentFileA : currentFileB;
-                      const target = (active?.type === 'psd') ? active : fallback;
-                      if (target?.path) openInComicBridge(target.path);
-                    }}
-                    className={`flex items-center rounded border transition-colors bg-[rgba(196,164,124,0.15)] border-[rgba(196,164,124,0.2)] text-orange-300 hover:bg-[rgba(196,164,124,0.22)] ${hasPsdInParallel ? 'gap-1 px-2.5 py-1.5' : 'gap-1.5 px-3 py-1.5'}`}
-                    title="COMIC-Bridgeの写植機能で開く"
-                  >
-                    <Layers size={hasPsdInParallel ? 12 : 14} />
-                    CB写植
-                  </button>
+                  <div className="relative">
+                    <button
+                      onClick={() => {
+                        if (parallelSyncMode && hasBothPsd) {
+                          setShowPsSelectPopup(false);
+                          setShowMojiQSelectPopup(false);
+                          setShowCbSelectPopup(!showCbSelectPopup);
+                          return;
+                        }
+
+                        const active = parallelActivePanel === 'A' ? currentFileA : currentFileB;
+                        const fallback = hasPsdA ? currentFileA : currentFileB;
+                        const target = (active?.type === 'psd') ? active : fallback;
+                        if (target?.path) openInComicBridge(target.path);
+                      }}
+                      className={`flex items-center rounded border transition-colors bg-[rgba(196,164,124,0.15)] border-[rgba(196,164,124,0.2)] text-orange-300 hover:bg-[rgba(196,164,124,0.22)] ${hasPsdInParallel ? 'gap-1 px-2.5 py-1.5' : 'gap-1.5 px-3 py-1.5'}`}
+                      title="COMIC-Bridgeの写植機能で開く"
+                    >
+                      <Layers size={hasPsdInParallel ? 12 : 14} />
+                      CB写植
+                    </button>
+
+                    {showCbSelectPopup && hasBothPsd && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setShowCbSelectPopup(false)} />
+                        <div className="absolute top-full right-0 mt-2 p-2 bg-neutral-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] z-50 min-w-48">
+                          <button
+                            onClick={() => {
+                              if (currentFileA?.path) openInComicBridge(currentFileA.path);
+                              setShowCbSelectPopup(false);
+                            }}
+                            disabled={!hasPsdA}
+                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-white/[0.03] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
+                          >
+                            <span className="text-blue-400 shrink-0">A側</span>
+                            <span className="text-neutral-400 truncate">{currentFileA?.name || '-'}</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (currentFileB?.path) openInComicBridge(currentFileB.path);
+                              setShowCbSelectPopup(false);
+                            }}
+                            disabled={!hasPsdB}
+                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-white/[0.03] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
+                          >
+                            <span className="text-green-400 shrink-0">B側</span>
+                            <span className="text-neutral-400 truncate">{currentFileB?.name || '-'}</span>
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 );
               })()}
               {/* MojiQで開くボタン */}
@@ -435,11 +610,13 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                       onClick={() => {
                         // 非同期モードまたは片方のみPDFの場合は直接開く
                         if (!parallelSyncMode || !hasBothPdf) {
-                          const file = parallelActivePanel === 'A' ? currentFileA : currentFileB;
-                          if (file?.type === 'pdf') {
+                          const active = parallelActivePanel === 'A' ? currentFileA : currentFileB;
+                          const fallback = hasPdfA ? currentFileA : currentFileB;
+                          const target = active?.type === 'pdf' ? active : fallback;
+                          if (target?.type === 'pdf') {
                             releaseMemoryBeforeMojiQ();
                             setTimeout(() => {
-                              invoke('open_pdf_in_mojiq', { pdfPath: file.path, page: file.pdfPage || 1 })
+                              invoke('open_pdf_in_mojiq', { pdfPath: target.path, page: target.pdfPage || 1 })
                                 .catch((err: unknown) => {
                                   console.error('[MojiQ] Error:', err);
                                   alert(`MojiQの起動に失敗しました:\n${err}`);
@@ -448,6 +625,8 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           }
                         } else {
                           // 同期モードで両方PDFの場合はポップアップ
+                          setShowPsSelectPopup(false);
+                          setShowCbSelectPopup(false);
                           setShowMojiQSelectPopup(!showMojiQSelectPopup);
                         }
                       }}
@@ -502,65 +681,6 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           >
                             <span className="text-green-400 shrink-0">B側</span>
                             <span className="text-neutral-400 truncate">{currentFileB?.name || '-'}</span>
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                );
-              })()}
-              {/* フォルダを開くボタン */}
-              {(() => {
-                const folderPathA = getParallelFolderPath('A');
-                const folderPathB = getParallelFolderPath('B');
-                if (!folderPathA && !folderPathB) return null;
-                const hasBothFolders = folderPathA && folderPathB;
-                return (
-                  <div className="relative">
-                    <button
-                      onClick={() => {
-                        if (!parallelSyncMode || !hasBothFolders) {
-                          // 非同期モードまたは片方のみの場合は直接開く
-                          const folderPath = parallelActivePanel === 'A' ? folderPathA : folderPathB;
-                          openFolderInExplorer(folderPath || (folderPathA || folderPathB)!);
-                        } else {
-                          // 同期モードで両方ある場合はポップアップ
-                          setShowFolderSelectPopup(!showFolderSelectPopup);
-                        }
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded border transition-colors bg-[rgba(196,164,124,0.15)] border-[rgba(196,164,124,0.2)] text-orange-400 hover:bg-[rgba(196,164,124,0.2)]"
-                      title="フォルダを開く"
-                    >
-                      <FolderOpen size={14} />
-                      フォルダ
-                    </button>
-
-                    {/* 選択ポップアップ */}
-                    {showFolderSelectPopup && (
-                      <>
-                        <div className="fixed inset-0 z-40" onClick={() => setShowFolderSelectPopup(false)} />
-                        <div className="absolute top-full right-0 mt-2 p-2 bg-neutral-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] z-50 min-w-48">
-                          <button
-                            onClick={() => {
-                              openFolderInExplorer(folderPathA!);
-                              setShowFolderSelectPopup(false);
-                            }}
-                            disabled={!folderPathA}
-                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-white/[0.03] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
-                          >
-                            <span className="text-blue-400 shrink-0">A側</span>
-                            <span className="text-neutral-400 truncate">{parallelFolderA?.split(/[/\\]/).pop() || '-'}</span>
-                          </button>
-                          <button
-                            onClick={() => {
-                              openFolderInExplorer(folderPathB!);
-                              setShowFolderSelectPopup(false);
-                            }}
-                            disabled={!folderPathB}
-                            className="w-full text-left px-3 py-2 rounded text-sm hover:bg-white/[0.03] disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2"
-                          >
-                            <span className="text-green-400 shrink-0">B側</span>
-                            <span className="text-neutral-400 truncate">{parallelFolderB?.split(/[/\\]/).pop() || '-'}</span>
                           </button>
                         </div>
                       </>
@@ -699,39 +819,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                 {parallelFilesA[0]?.type === 'pdf' ? <FileText size={12} className="mr-2" /> : <FolderOpen size={12} className="mr-2" />}
                 <span className="truncate max-w-32">{parallelFolderA ? parallelFolderA.split(/[/\\]/).pop() : 'A'}</span>
                 {/* 単ページ化ボタン（PDF時のみ） */}
-                {parallelFilesA.length > 0 && parallelFilesA[0]?.type === 'pdf' && (
-                  <div className="ml-2 relative group">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const newMode = !spreadSplitModeA;
-                        setSpreadSplitModeA(newMode);
-                        const firstEntry = parallelFilesA[0];
-                        if (firstEntry?.path && firstEntry.type === 'pdf') {
-                          expandPdfToParallelEntries(firstEntry.path, 'A', firstEntry.pdfFile, newMode);
-                        }
-                      }}
-                      className={`px-3 py-1 rounded text-sm text-white transition flex items-center gap-1.5 font-medium ${spreadSplitModeA ? 'bg-orange-600 hover:bg-orange-500' : 'bg-neutral-600 hover:bg-neutral-500'}`}
-                      title="見開きPDFを単ページに分割"
-                    >
-                      <BookOpen size={14} />
-                      単ページ化
-                    </button>
-                    <div className="hidden group-hover:block absolute top-full left-0 pt-1 z-50">
-                      <div className="p-2 bg-neutral-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] whitespace-nowrap">
-                        <label className="flex items-center gap-2 cursor-pointer text-sm text-neutral-300 hover:text-white" onClick={(e) => e.stopPropagation()}>
-                          <input
-                            type="checkbox"
-                            checked={firstPageSingleA}
-                            onChange={(e) => setFirstPageSingleA(e.target.checked)}
-                            className="w-4 h-4 rounded border-white/[0.08] bg-neutral-800"
-                          />
-                          1P単独
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-                )}
+                {renderPdfCompositionControl('A')}
                 {!parallelSyncMode && parallelFilesA.length > 0 && (
                   <div className="ml-auto flex items-center gap-1">
                     <button
@@ -933,39 +1021,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                 {parallelFilesB[0]?.type === 'pdf' ? <FileText size={12} className="mr-2" /> : <FolderOpen size={12} className="mr-2" />}
                 <span className="truncate max-w-32">{parallelFolderB ? parallelFolderB.split(/[/\\]/).pop() : 'B'}</span>
                 {/* 単ページ化ボタン（PDF時のみ） */}
-                {parallelFilesB.length > 0 && parallelFilesB[0]?.type === 'pdf' && (
-                  <div className="ml-2 relative group">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const newMode = !spreadSplitModeB;
-                        setSpreadSplitModeB(newMode);
-                        const firstEntry = parallelFilesB[0];
-                        if (firstEntry?.path && firstEntry.type === 'pdf') {
-                          expandPdfToParallelEntries(firstEntry.path, 'B', firstEntry.pdfFile, newMode);
-                        }
-                      }}
-                      className={`px-3 py-1 rounded text-sm text-white transition flex items-center gap-1.5 font-medium ${spreadSplitModeB ? 'bg-orange-600 hover:bg-orange-500' : 'bg-neutral-600 hover:bg-neutral-500'}`}
-                      title="見開きPDFを単ページに分割"
-                    >
-                      <BookOpen size={14} />
-                      単ページ化
-                    </button>
-                    <div className="hidden group-hover:block absolute top-full left-0 pt-1 z-50">
-                      <div className="p-2 bg-neutral-800/95 backdrop-blur-md rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/[0.06] whitespace-nowrap">
-                        <label className="flex items-center gap-2 cursor-pointer text-sm text-neutral-300 hover:text-white" onClick={(e) => e.stopPropagation()}>
-                          <input
-                            type="checkbox"
-                            checked={firstPageSingleB}
-                            onChange={(e) => setFirstPageSingleB(e.target.checked)}
-                            className="w-4 h-4 rounded border-white/[0.08] bg-neutral-800"
-                          />
-                          1P単独
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-                )}
+                {renderPdfCompositionControl('B')}
                 {!parallelSyncMode && parallelFilesB.length > 0 && (
                   <div className="ml-auto flex items-center gap-1">
                     <button

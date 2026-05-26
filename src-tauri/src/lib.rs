@@ -943,7 +943,7 @@ fn decode_psd_fallback(bytes: &[u8]) -> Result<DynamicImage, String> {
     let depth = read_u16(bytes, &mut offset)?;
     let color_mode = read_u16(bytes, &mut offset)?;
 
-    if depth != 8 {
+    if depth != 8 && !(color_mode == 0 && depth == 1) {
         return Err(format!(
             "フォールバックパーサーは{}bit深度に未対応です",
             depth
@@ -952,7 +952,12 @@ fn decode_psd_fallback(bytes: &[u8]) -> Result<DynamicImage, String> {
 
     // Color Mode Data セクションをスキップ
     let color_data_len = read_u32(bytes, &mut offset)? as usize;
+    let color_data_start = offset;
     offset += color_data_len;
+    if offset > bytes.len() {
+        return Err("PSD data truncated (color mode data)".to_string());
+    }
+    let color_data = &bytes[color_data_start..offset];
 
     // Image Resources セクションをスキップ
     let resource_len = read_u32(bytes, &mut offset)? as usize;
@@ -968,12 +973,33 @@ fn decode_psd_fallback(bytes: &[u8]) -> Result<DynamicImage, String> {
 
     // Image Data Section
     let compression = read_u16(bytes, &mut offset)?;
-    let ch_to_read = if color_mode == 4 {
-        channels.min(4) // CMYK: 4チャンネル
-    } else {
-        channels.min(3) // RGB等: 3チャンネル
+    if color_mode == 0 && depth == 1 {
+        return decode_psd_bitmap_image_data(
+            bytes,
+            offset,
+            width,
+            height,
+            channels,
+            compression,
+            is_psb,
+        );
+    }
+
+    let ch_to_read = match color_mode {
+        1 | 2 | 7 | 8 => channels.min(1),
+        3 | 9 => channels.min(3),
+        4 => channels.min(4),
+        _ => {
+            return Err(format!(
+                "Unsupported PSD color mode in fallback parser (color_mode={})",
+                color_mode
+            ));
+        }
     };
     let pixel_count = width * height;
+    if ch_to_read == 0 {
+        return Err("PSD has no readable channels".to_string());
+    }
 
     let channel_data: Vec<Vec<u8>> = match compression {
         0 => {
@@ -1039,54 +1065,218 @@ fn decode_psd_fallback(bytes: &[u8]) -> Result<DynamicImage, String> {
     // RGBA画像を組み立て
     let mut rgba = vec![0u8; pixel_count * 4];
 
-    if color_mode == 4 {
-        // CMYK → RGB変換
-        let c_ch = &channel_data[0];
-        let m_ch = &channel_data[1.min(channel_data.len() - 1)];
-        let y_ch = &channel_data[2.min(channel_data.len() - 1)];
-        let k_ch = if channel_data.len() >= 4 {
-            &channel_data[3]
-        } else {
-            c_ch
-        };
-        for i in 0..pixel_count {
-            let j = i * 4;
-            let (c, m, y, k) = (
-                c_ch[i] as u16,
-                m_ch[i] as u16,
-                y_ch[i] as u16,
-                k_ch[i] as u16,
-            );
-            rgba[j] = 255 - ((c + k).min(255) as u8);
-            rgba[j + 1] = 255 - ((m + k).min(255) as u8);
-            rgba[j + 2] = 255 - ((y + k).min(255) as u8);
-            rgba[j + 3] = 255;
+    match color_mode {
+        1 | 7 | 8 => {
+            let gray = &channel_data[0];
+            for i in 0..pixel_count {
+                let j = i * 4;
+                rgba[j] = gray[i];
+                rgba[j + 1] = gray[i];
+                rgba[j + 2] = gray[i];
+                rgba[j + 3] = 255;
+            }
         }
+        2 => {
+            if color_data.len() < 768 {
+                return Err("Indexed PSD palette is missing or truncated".to_string());
+            }
+            let index_ch = &channel_data[0];
+            for i in 0..pixel_count {
+                let palette_index = index_ch[i] as usize;
+                let j = i * 4;
+                rgba[j] = color_data[palette_index];
+                rgba[j + 1] = color_data[256 + palette_index];
+                rgba[j + 2] = color_data[512 + palette_index];
+                rgba[j + 3] = 255;
+            }
+        }
+        3 => {
+            let r = &channel_data[0];
+            let g = &channel_data[1.min(channel_data.len() - 1)];
+            let b = &channel_data[2.min(channel_data.len() - 1)];
+            for i in 0..pixel_count {
+                let j = i * 4;
+                rgba[j] = r[i];
+                rgba[j + 1] = g[i];
+                rgba[j + 2] = b[i];
+                rgba[j + 3] = 255;
+            }
+        }
+        4 => {
+            let c_ch = &channel_data[0];
+            let m_ch = &channel_data[1.min(channel_data.len() - 1)];
+            let y_ch = &channel_data[2.min(channel_data.len() - 1)];
+            let k_ch = &channel_data[3.min(channel_data.len() - 1)];
+            for i in 0..pixel_count {
+                let j = i * 4;
+                let (c, m, y, k) = (
+                    c_ch[i] as u16,
+                    m_ch[i] as u16,
+                    y_ch[i] as u16,
+                    k_ch[i] as u16,
+                );
+                rgba[j] = 255 - ((c + k).min(255) as u8);
+                rgba[j + 1] = 255 - ((m + k).min(255) as u8);
+                rgba[j + 2] = 255 - ((y + k).min(255) as u8);
+                rgba[j + 3] = 255;
+            }
+        }
+        9 => {
+            let l_ch = &channel_data[0];
+            let a_ch = &channel_data[1.min(channel_data.len() - 1)];
+            let b_ch = &channel_data[2.min(channel_data.len() - 1)];
+            for i in 0..pixel_count {
+                let j = i * 4;
+                let (r, g, b) = lab_to_srgb(l_ch[i], a_ch[i], b_ch[i]);
+                rgba[j] = r;
+                rgba[j + 1] = g;
+                rgba[j + 2] = b;
+                rgba[j + 3] = 255;
+            }
+        }
+        _ => unreachable!("unsupported PSD color mode should be rejected before decode"),
+    }
+
+    let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
+        ImageBuffer::from_raw(width as u32, height as u32, rgba)
+            .ok_or_else(|| "Failed to create image buffer (fallback)".to_string())?;
+    Ok(DynamicImage::ImageRgba8(img_buf))
+}
+
+fn lab_to_srgb(l_byte: u8, a_byte: u8, b_byte: u8) -> (u8, u8, u8) {
+    let l = (l_byte as f32) * 100.0 / 255.0;
+    let a = (a_byte as f32) - 128.0;
+    let b = (b_byte as f32) - 128.0;
+
+    let fy = (l + 16.0) / 116.0;
+    let fx = fy + a / 500.0;
+    let fz = fy - b / 200.0;
+
+    fn lab_f_inv(t: f32) -> f32 {
+        let t3 = t * t * t;
+        if t3 > 0.008856 {
+            t3
+        } else {
+            (t - 16.0 / 116.0) / 7.787
+        }
+    }
+
+    let x = 0.9642 * lab_f_inv(fx);
+    let y = lab_f_inv(fy);
+    let z = 0.8251 * lab_f_inv(fz);
+
+    let x_d65 = 0.9555766 * x - 0.0230393 * y + 0.0631636 * z;
+    let y_d65 = -0.0282895 * x + 1.0099416 * y + 0.0210077 * z;
+    let z_d65 = 0.0122982 * x - 0.0204830 * y + 1.3299098 * z;
+
+    let r = 3.2404542 * x_d65 - 1.5371385 * y_d65 - 0.4985314 * z_d65;
+    let g = -0.9692660 * x_d65 + 1.8760108 * y_d65 + 0.0415560 * z_d65;
+    let blue = 0.0556434 * x_d65 - 0.2040259 * y_d65 + 1.0572252 * z_d65;
+
+    (
+        linear_to_srgb_u8(r),
+        linear_to_srgb_u8(g),
+        linear_to_srgb_u8(blue),
+    )
+}
+
+fn linear_to_srgb_u8(v: f32) -> u8 {
+    let v = v.clamp(0.0, 1.0);
+    let srgb = if v <= 0.0031308 {
+        12.92 * v
     } else {
-        // RGB / Grayscale
-        let r = &channel_data[0];
-        let g = if channel_data.len() >= 2 {
-            &channel_data[1]
-        } else {
-            r
-        };
-        let b = if channel_data.len() >= 3 {
-            &channel_data[2]
-        } else {
-            r
-        };
-        for i in 0..pixel_count {
-            let j = i * 4;
-            rgba[j] = r[i];
-            rgba[j + 1] = g[i];
-            rgba[j + 2] = b[i];
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    };
+    (srgb * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+fn decode_psd_bitmap_image_data(
+    bytes: &[u8],
+    mut offset: usize,
+    width: usize,
+    height: usize,
+    channels: usize,
+    compression: u16,
+    is_psb: bool,
+) -> Result<DynamicImage, String> {
+    if channels == 0 {
+        return Err("Bitmap PSD has no channels".to_string());
+    }
+
+    let row_bytes = (width + 7) / 8;
+    let bitmap = match compression {
+        0 => {
+            if offset + row_bytes * height > bytes.len() {
+                return Err("PSD data truncated (bitmap raw data)".to_string());
+            }
+            bytes[offset..offset + row_bytes * height].to_vec()
+        }
+        1 => {
+            let total_rows = channels * height;
+            let count_size = if is_psb { 4 } else { 2 };
+            if offset + total_rows * count_size > bytes.len() {
+                return Err("PSD data truncated (bitmap RLE row counts)".to_string());
+            }
+
+            let mut row_counts = Vec::with_capacity(total_rows);
+            for _ in 0..total_rows {
+                let row_len = if is_psb {
+                    read_u32(bytes, &mut offset)? as usize
+                } else {
+                    read_u16(bytes, &mut offset)? as usize
+                };
+                row_counts.push(row_len);
+            }
+
+            let mut decoded = vec![0u8; row_bytes * height];
+            let mut row_idx = 0;
+            for c in 0..channels {
+                for y in 0..height {
+                    let row_len = row_counts[row_idx];
+                    row_idx += 1;
+                    if offset + row_len > bytes.len() {
+                        return Err("PSD data truncated (bitmap RLE data)".to_string());
+                    }
+                    if c == 0 {
+                        decode_packbits(
+                            bytes,
+                            offset,
+                            row_len,
+                            &mut decoded,
+                            y * row_bytes,
+                            row_bytes,
+                        );
+                    }
+                    offset += row_len;
+                }
+            }
+            decoded
+        }
+        _ => {
+            return Err(format!(
+                "Unsupported Bitmap PSD compression (compression={})",
+                compression
+            ));
+        }
+    };
+
+    let mut rgba = vec![255u8; width * height * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let byte = bitmap[y * row_bytes + x / 8];
+            let bit = (byte >> (7 - (x % 8))) & 1;
+            let value = if bit == 1 { 0 } else { 255 };
+            let j = (y * width + x) * 4;
+            rgba[j] = value;
+            rgba[j + 1] = value;
+            rgba[j + 2] = value;
             rgba[j + 3] = 255;
         }
     }
 
     let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
         ImageBuffer::from_raw(width as u32, height as u32, rgba)
-            .ok_or_else(|| "Failed to create image buffer (fallback)".to_string())?;
+            .ok_or_else(|| "Failed to create image buffer (bitmap PSD fallback)".to_string())?;
     Ok(DynamicImage::ImageRgba8(img_buf))
 }
 
@@ -1676,6 +1866,17 @@ fn diff_heatmap_core_masked(
 // color-mono 用の前処理: 両画像をグレースケール化（RGBA 形式は維持、R=G=B=luma）し、
 // モノクロ側の濃い部分だけを mask=1 とする。
 // 戻り値: (rgba_a_gray, rgba_b_gray, mask, width, height)
+fn heatmap_diff_probability(high_density_count: u32, width: u32, height: u32) -> f64 {
+    if high_density_count == 0 {
+        return 0.0;
+    }
+
+    let total_pixels = ((width as f64) * (height as f64)).max(1.0);
+    let high_density_ratio = high_density_count as f64 / total_pixels;
+    let score = (1.0 - (-high_density_ratio * 120.0).exp()) * 100.0;
+    (score.clamp(0.1, 100.0) * 10.0).round() / 10.0
+}
+
 fn prepare_color_mono(
     img_a: &DynamicImage,
     img_b: &DynamicImage,
@@ -1747,14 +1948,7 @@ fn compute_diff_color_mono(
     let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
 
     // diffProbability
-    let diff_probability = if high_density_count > 0 {
-        let total_pixels = (width as f64) * (height as f64);
-        let base_prob = 70.0;
-        let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
-        ((base_prob + additional) * 10.0).round() / 10.0
-    } else {
-        0.0
-    };
+    let diff_probability = heatmap_diff_probability(high_density_count, width, height);
 
     // 表示用エンコード: オリジナルA(カラーのまま) / オリジナルB(モノクロのまま) / 差分ヒートマップ
     // ※ A表示・B表示はカラー/モノクロのオリジナルをそのまま見せる。グレースケール化は差分計算専用。
@@ -1817,14 +2011,7 @@ fn check_diff_color_mono(
 
     let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
 
-    let diff_probability = if high_density_count > 0 {
-        let total_pixels = (width as f64) * (height as f64);
-        let base_prob = 70.0;
-        let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
-        ((base_prob + additional) * 10.0).round() / 10.0
-    } else {
-        0.0
-    };
+    let diff_probability = heatmap_diff_probability(high_density_count, width, height);
 
     Ok(DiffCheckHeatmapResult {
         has_diff: high_density_count > 0,
@@ -2049,14 +2236,7 @@ fn compute_diff_heatmap(
     let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
 
     // diffProbability計算
-    let diff_probability = if high_density_count > 0 {
-        let total_pixels = (tiff_w as f64) * (tiff_h as f64);
-        let base_prob = 70.0;
-        let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
-        ((base_prob + additional) * 10.0).round() / 10.0
-    } else {
-        0.0
-    };
+    let diff_probability = heatmap_diff_probability(high_density_count, tiff_w, tiff_h);
 
     // 4画像を並列エンコード → JPEG tempファイル（A/B/processedA）+ PNG tempファイル（diff）
     let cache_a = format!("heatmap_a_{}", versioned_path_key(&psd_path));
@@ -2186,14 +2366,7 @@ fn check_diff_heatmap(
     let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
 
     // diffProbability計算
-    let diff_probability = if high_density_count > 0 {
-        let total_pixels = (tiff_w as f64) * (tiff_h as f64);
-        let base_prob = 70.0;
-        let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
-        ((base_prob + additional) * 10.0).round() / 10.0
-    } else {
-        0.0
-    };
+    let diff_probability = heatmap_diff_probability(high_density_count, tiff_w, tiff_h);
 
     // 画像エンコードをスキップ！
     Ok(DiffCheckHeatmapResult {
@@ -2518,14 +2691,7 @@ fn compute_diff_psd_pdf(
         let (heatmap_buf, high_density_count, high_pixels) =
             diff_heatmap_core(rgba_a.as_raw(), rgba_b.as_raw(), canvas_w, canvas_h, threshold);
         let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
-        let diff_probability = if high_density_count > 0 {
-            let total_pixels = (canvas_w as f64) * (canvas_h as f64);
-            let base_prob = 70.0;
-            let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
-            ((base_prob + additional) * 10.0).round() / 10.0
-        } else {
-            0.0
-        };
+        let diff_probability = heatmap_diff_probability(high_density_count, canvas_w, canvas_h);
         (heatmap_buf, high_density_count, markers, diff_probability)
     };
 
@@ -2637,14 +2803,7 @@ fn check_diff_psd_pdf(
         let (_heatmap_buf, high_density_count, high_pixels) =
             diff_heatmap_core(rgba_a.as_raw(), rgba_b.as_raw(), canvas_w, canvas_h, threshold);
         let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
-        let diff_probability = if high_density_count > 0 {
-            let total_pixels = (canvas_w as f64) * (canvas_h as f64);
-            let base_prob = 70.0;
-            let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
-            ((base_prob + additional) * 10.0).round() / 10.0
-        } else {
-            0.0
-        };
+        let diff_probability = heatmap_diff_probability(high_density_count, canvas_w, canvas_h);
         (high_density_count, markers, diff_probability)
     };
 
@@ -2890,14 +3049,7 @@ fn auto_align_psd_pdf(
         let (heatmap_buf, high_density_count, high_pixels) =
             diff_heatmap_core(rgba_a.as_raw(), rgba_b.as_raw(), diff_w, diff_h, threshold);
         let markers = cluster_markers(&high_pixels, 250, 20, 80.0);
-        let diff_probability = if high_density_count > 0 {
-            let total_pixels = (diff_w as f64) * (diff_h as f64);
-            let base_prob = 70.0;
-            let additional = (high_density_count as f64 / total_pixels * 50000.0).min(30.0);
-            ((base_prob + additional) * 10.0).round() / 10.0
-        } else {
-            0.0
-        };
+        let diff_probability = heatmap_diff_probability(high_density_count, diff_w, diff_h);
         (heatmap_buf, high_density_count, markers, diff_probability)
     };
 

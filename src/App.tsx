@@ -84,6 +84,7 @@ export default function MangaDiffDetector() {
   const [parallelActivePanel, setParallelActivePanel] = useState<'A' | 'B'>('A'); // 非同期モードでアクティブなパネル
   const [showSyncOptions, setShowSyncOptions] = useState(false); // 再同期オプション表示
   const [showPsSelectPopup, setShowPsSelectPopup] = useState(false); // Photoshop選択ポップアップ
+  const [showCbSelectPopup, setShowCbSelectPopup] = useState(false); // CB写植選択ポップアップ
   const [showMojiQSelectPopup, setShowMojiQSelectPopup] = useState(false); // MojiQ選択ポップアップ（並列ビューワー用）
   const [showFolderSelectPopup, setShowFolderSelectPopup] = useState(false); // フォルダ選択ポップアップ（並列ビューワー用）
   const [showHomeConfirm, setShowHomeConfirm] = useState(false); // ホーム遷移確認ダイアログ
@@ -683,9 +684,11 @@ export default function MangaDiffDetector() {
       'tif': 'image/tiff', 'tiff': 'image/tiff',
       'psd': 'image/vnd.adobe.photoshop', 'psb': 'image/vnd.adobe.photoshop',
       'pdf': 'application/pdf',
+      'png': 'image/png',
+      'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
       'json': 'application/json'
     };
-    const supportedExts = ['psd', 'psb', 'tif', 'tiff', 'jpg', 'jpeg', 'pdf', 'json'];
+    const supportedExts = ['psd', 'psb', 'tif', 'tiff', 'jpg', 'jpeg', 'png', 'pdf', 'json'];
 
     // ファイルパスを収集（読み込みはまだしない）
     const filePaths: string[] = [];
@@ -1231,12 +1234,14 @@ export default function MangaDiffDetector() {
       const extensions = getAcceptedExtensions('B').map(e => e.replace('.', ''));
 
       // PDFモードの場合はファイル選択、その他はフォルダ選択
-      if (compareMode === 'pdf-pdf') {
+      if (compareMode === 'pdf-pdf' || compareMode === 'psd-pdf') {
         const selected = await open({
           directory: false,
           multiple: false,
-          title: 'PDFファイルBを選択',
-          filters: [{ name: 'PDF', extensions: ['pdf'] }],
+          title: compareMode === 'psd-pdf' ? 'PDF/画像ファイルを選択' : 'PDFファイルBを選択',
+          filters: compareMode === 'psd-pdf'
+            ? [{ name: 'PDF/画像', extensions }]
+            : [{ name: 'PDF', extensions: ['pdf'] }],
         });
         if (!selected || typeof selected !== 'string') return;
 
@@ -2301,6 +2306,106 @@ export default function MangaDiffDetector() {
     setParallelIndexB(selectedIndex);
   }, [filesA, filesB, pairs, selectedIndex, getParallelDisplaySize, compareMode, currentPage, diffCache]);
 
+  const transferParallelToDiffView = useCallback(async () => {
+    const hasParallelFiles = parallelFilesA.length > 0 || parallelFilesB.length > 0;
+
+    const isUsablePath = (path: string | undefined) =>
+      !!path && !path.startsWith('blob:') && !path.startsWith('data:') && !path.startsWith('dropped:');
+
+    const uniqueEntryPaths = (entries: ParallelFileEntry[]) => {
+      const seen = new Set<string>();
+      const paths: string[] = [];
+      for (const entry of entries) {
+        if (!isUsablePath(entry.path) || seen.has(entry.path)) continue;
+        seen.add(entry.path);
+        paths.push(entry.path);
+      }
+      return paths;
+    };
+
+    const looksLikeFilePath = (path: string) => {
+      const name = path.split(/[/\\]/).pop() || '';
+      return /\.[a-z0-9]+$/i.test(name);
+    };
+
+    const folderForDiffSide = (side: 'A' | 'B', folderPath: string | null) => {
+      if (!folderPath || folderPath === 'diff-mode' || !isUsablePath(folderPath)) return null;
+      if (looksLikeFilePath(folderPath)) return null;
+      if (compareMode === 'pdf-pdf') return null;
+      if (compareMode === 'psd-pdf' && side === 'B') return null;
+      return folderPath;
+    };
+
+    const syncSide = async (
+      side: 'A' | 'B',
+      entries: ParallelFileEntry[],
+      folderPath: string | null,
+      setSideFiles: React.Dispatch<React.SetStateAction<File[]>>,
+      setSideFolder: React.Dispatch<React.SetStateAction<string | null>>,
+    ) => {
+      const paths = uniqueEntryPaths(entries);
+      if (paths.length === 0) {
+        setSideFiles([]);
+        setSideFolder(null);
+        return;
+      }
+
+      const loadedFiles = await readFilesFromPaths(paths);
+      const filtered = loadedFiles
+        .filter(file => isAcceptedFile(file, side))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+      setSideFiles(filtered);
+      setSideFolder(folderForDiffSide(side, folderPath));
+    };
+
+    try {
+      if (hasParallelFiles) {
+        await Promise.all([
+          syncSide('A', parallelFilesA, parallelFolderA, setFilesA, setDiffFolderA),
+          syncSide('B', parallelFilesB, parallelFolderB, setFilesB, setDiffFolderB),
+        ]);
+
+        setDiffCache(prev => { cleanupPageCache(prev); return {}; });
+        setPairs([]);
+        processingRef.current = false;
+
+        if (compareMode === 'pdf-pdf') {
+          const activeEntry = parallelActivePanel === 'A'
+            ? parallelFilesA[parallelIndexA]
+            : parallelFilesB[parallelIndexB];
+          setCurrentPage(Math.max(1, activeEntry?.pdfPage ?? 1));
+          setSelectedIndex(0);
+        } else {
+          const activeIndex = parallelSyncMode
+            ? Math.max(parallelIndexA, parallelIndexB)
+            : (parallelActivePanel === 'A' ? parallelIndexA : parallelIndexB);
+          setSelectedIndex(Math.max(0, activeIndex));
+          setCurrentPage(1);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to transfer parallel view state to diff mode:', err);
+    } finally {
+      setAppMode('diff-check');
+      setInitialModeSelect(false);
+      setSidebarCollapsed(false);
+    }
+  }, [
+    cleanupPageCache,
+    compareMode,
+    isAcceptedFile,
+    parallelActivePanel,
+    parallelFilesA,
+    parallelFilesB,
+    parallelFolderA,
+    parallelFolderB,
+    parallelIndexA,
+    parallelIndexB,
+    parallelSyncMode,
+    readFilesFromPaths,
+  ]);
+
   // フォルダ選択
   const handleSelectParallelFolder = async (side: 'A' | 'B') => {
     try {
@@ -2360,7 +2465,7 @@ export default function MangaDiffDetector() {
   };
 
   // PDFをページエントリに展開する
-  const expandPdfToParallelEntries = async (pdfPath: string, side: 'A' | 'B', droppedFile?: File, forceSplitMode?: boolean) => {
+  const expandPdfToParallelEntries = async (pdfPath: string, side: 'A' | 'B', droppedFile?: File, forceSplitMode?: boolean, forceFirstPageSingle?: boolean) => {
     try {
       const fileName = pdfPath.split(/[/\\]/).pop() || 'PDF';
 
@@ -2370,7 +2475,7 @@ export default function MangaDiffDetector() {
       // 各ページをエントリとして展開
       const entries: ParallelFileEntry[] = [];
       const splitMode = forceSplitMode !== undefined ? forceSplitMode : (side === 'A' ? spreadSplitModeA : spreadSplitModeB);
-      const firstSingle = side === 'A' ? firstPageSingleA : firstPageSingleB;
+      const firstSingle = forceFirstPageSingle !== undefined ? forceFirstPageSingle : (side === 'A' ? firstPageSingleA : firstPageSingleB);
       for (let page = 1; page <= numPages; page++) {
         if (splitMode) {
           // 見開き分割モード
@@ -3697,8 +3802,7 @@ export default function MangaDiffDetector() {
           setAppMode('parallel-view');
           setInitialModeSelect(false);
         } else if (appMode === 'parallel-view') {
-          setAppMode('diff-check');
-          setInitialModeSelect(false);
+          void transferParallelToDiffView();
         }
         return;
       }
@@ -3901,7 +4005,9 @@ export default function MangaDiffDetector() {
           e.preventDefault();
           // 非同期モードまたは片方のみPDFの場合は直接開く
           if (!parallelSyncMode || !(hasPdfA && hasPdfB)) {
-            const file = parallelActivePanel === 'A' ? fileA : fileB;
+            const active = parallelActivePanel === 'A' ? fileA : fileB;
+            const fallback = hasPdfA ? fileA : fileB;
+            const file = active?.type === 'pdf' ? active : fallback;
             if (file?.type === 'pdf') {
               releaseMemoryBeforeMojiQ();
               setTimeout(() => {
@@ -3914,6 +4020,8 @@ export default function MangaDiffDetector() {
             }
           } else {
             // 同期モードで両方PDFの場合はポップアップ
+            setShowPsSelectPopup(false);
+            setShowCbSelectPopup(false);
             setShowMojiQSelectPopup(!showMojiQSelectPopup);
           }
           return;
@@ -3998,27 +4106,38 @@ export default function MangaDiffDetector() {
           openInPhotoshop(psdFile.filePath);
         }
       }
-      // Qキー: PDF-PDFモードでMojiQで開く
-      if (e.code === 'KeyQ' && compareMode === 'pdf-pdf') {
+      // Qキー: PDFをMojiQで開く
+      if (e.code === 'KeyQ' && (compareMode === 'pdf-pdf' || compareMode === 'psd-pdf')) {
         const currentPair = pairs[selectedIndex];
         if (!currentPair || currentPair.status !== 'done') return;
         let pdfFile: FileWithPath | null = null;
-        if (viewMode === 'A' || viewMode === 'A-full' || viewMode === 'diff') {
-          pdfFile = currentPair.fileA as FileWithPath | null;
-        } else if (viewMode === 'B') {
+        let mojiQPage = currentPage;
+        if (compareMode === 'pdf-pdf') {
+          if (viewMode === 'A' || viewMode === 'A-full' || viewMode === 'diff') {
+            pdfFile = currentPair.fileA as FileWithPath | null;
+          } else if (viewMode === 'B') {
+            pdfFile = currentPair.fileB as FileWithPath | null;
+          }
+        } else if (compareMode === 'psd-pdf') {
           pdfFile = currentPair.fileB as FileWithPath | null;
+          mojiQPage = (currentPair.pdfPage ?? 0) + 1;
         }
-        if (pdfFile?.filePath && pdfFile.name.toLowerCase().endsWith('.pdf')) {
+        const isPdf = !!pdfFile && (
+          pdfFile.type === 'application/pdf' ||
+          pdfFile.name.toLowerCase().endsWith('.pdf') ||
+          !!pdfFile.filePath?.toLowerCase().endsWith('.pdf')
+        );
+        if (pdfFile?.filePath && isPdf) {
           e.preventDefault();
           releaseMemoryBeforeMojiQ();
           setTimeout(() => {
-            invoke('open_pdf_in_mojiq', { pdfPath: pdfFile.filePath, page: currentPage })
+            invoke('open_pdf_in_mojiq', { pdfPath: pdfFile.filePath, page: mojiQPage })
               .catch((err: unknown) => {
                 console.error('[MojiQ] Error:', err);
                 alert(`MojiQの起動に失敗しました:\n${err}`);
               });
           }, 100);
-        } else if (pdfFile) {
+        } else if (pdfFile && isPdf) {
           console.warn('[MojiQ] App Q-key diff: filePath is undefined', { filePath: pdfFile?.filePath, name: pdfFile?.name });
           alert('MojiQ連携エラー: PDFファイルのパスが取得できませんでした。ファイルを再読み込みしてください。');
         }
@@ -4059,7 +4178,7 @@ export default function MangaDiffDetector() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [pairs, selectedIndex, compareMode, viewMode, appMode, parallelMaxIndex, parallelSyncMode, parallelActivePanel, parallelCurrentIndex, parallelIndexA, parallelIndexB, parallelFilesA, parallelFilesB, parallelImageA, parallelImageB, transferDiffToParallelView, capturedImage, parallelCapturedImageA, parallelCapturedImageB, refreshDiffMode, refreshParallelView, toggleFullscreen, isFullscreen, clearParallelView, goNextDiffFile, goPrevDiffFile]);
+  }, [pairs, selectedIndex, compareMode, viewMode, appMode, parallelMaxIndex, parallelSyncMode, parallelActivePanel, parallelCurrentIndex, parallelIndexA, parallelIndexB, parallelFilesA, parallelFilesB, parallelImageA, parallelImageB, transferDiffToParallelView, transferParallelToDiffView, capturedImage, parallelCapturedImageA, parallelCapturedImageB, refreshDiffMode, refreshParallelView, toggleFullscreen, isFullscreen, clearParallelView, goNextDiffFile, goPrevDiffFile]);
 
   // 表示画像取得
   const currentPair = pairs[selectedIndex];
@@ -4357,6 +4476,7 @@ export default function MangaDiffDetector() {
           initialModeSelect={initialModeSelect}
           setInitialModeSelect={setInitialModeSelect}
           transferDiffToParallelView={transferDiffToParallelView}
+          transferParallelToDiffView={transferParallelToDiffView}
           compareMode={compareMode}
           modeLabels={modeLabels}
           filesA={filesA}
@@ -4568,10 +4688,12 @@ export default function MangaDiffDetector() {
             setFirstPageSingleB={setFirstPageSingleB}
             showSyncOptions={showSyncOptions}
             showPsSelectPopup={showPsSelectPopup}
+            showCbSelectPopup={showCbSelectPopup}
             showMojiQSelectPopup={showMojiQSelectPopup}
             showFolderSelectPopup={showFolderSelectPopup}
             setShowSyncOptions={setShowSyncOptions}
             setShowPsSelectPopup={setShowPsSelectPopup}
+            setShowCbSelectPopup={setShowCbSelectPopup}
             setShowMojiQSelectPopup={setShowMojiQSelectPopup}
             setShowFolderSelectPopup={setShowFolderSelectPopup}
             instructionButtonsHidden={instructionButtonsHidden}

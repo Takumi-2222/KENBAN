@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   PanelLeft, PanelLeftClose, Eye, Columns2, HardDrive,
   Settings, ChevronUp, ChevronDown, Target,
@@ -24,6 +24,7 @@ interface SidebarProps {
   initialModeSelect: boolean;
   setInitialModeSelect: (v: boolean) => void;
   transferDiffToParallelView: () => void;
+  transferParallelToDiffView: () => void;
   compareMode: CompareMode;
   modeLabels: ModeLabels;
   filesA: File[];
@@ -108,6 +109,7 @@ export default function Sidebar({
   initialModeSelect,
   setInitialModeSelect,
   transferDiffToParallelView,
+  transferParallelToDiffView,
   compareMode,
   modeLabels,
   filesA,
@@ -185,13 +187,33 @@ export default function Sidebar({
   });
 
   const currentPair = pairs[selectedIndex];
+  const sourceButtonLabel = compareMode === 'psd-pdf' ? 'PSDフォルダ' : modeLabels.a;
+  const targetButtonLabel = compareMode === 'psd-pdf' ? 'PDF/画像ファイル' : modeLabels.b;
+  const dropHint = compareMode === 'psd-pdf'
+    ? 'PSDフォルダ / PDF・画像ファイルをドロップ可能'
+    : 'ファイル/フォルダをドロップ可能';
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
 
-  // Helper for mode button styling
-  const modeButtonClass = (mode: CompareMode) => {
-    const accent = modeAccent[mode];
-    return compareMode === mode
-      ? `${accent.bg} ${accent.text} border ${accent.border}`
-      : 'bg-transparent text-neutral-500 hover:text-neutral-300 hover:bg-white/[0.04] border border-transparent';
+  const modeMeta: Record<CompareMode, { label: string; group: string; icon: React.ReactNode }> = {
+    'tiff-tiff': { label: 'TIFF', group: '標準比較', icon: <span className="text-[11px] font-semibold">TIFF</span> },
+    'psd-psd': { label: 'PSD', group: '標準比較', icon: <span className="text-[11px] font-semibold">PSD</span> },
+    'pdf-pdf': { label: 'PDF', group: '標準比較', icon: <FileText size={14} /> },
+    'psd-tiff': { label: 'PSD→TIFF', group: '混合・特殊', icon: <GitCompare size={14} /> },
+    'psd-pdf': { label: 'PSD↔PDF', group: '混合・特殊', icon: <GitCompare size={14} /> },
+    'color-mono': { label: 'カラー/モノクロ', group: '混合・特殊', icon: <Palette size={14} /> },
+    'text-verify': { label: 'テキスト照合', group: '照合', icon: <Type size={14} /> },
+  };
+
+  const modeGroups: Array<{ title: string; modes: CompareMode[] }> = [
+    { title: '標準比較', modes: ['tiff-tiff', 'psd-psd', 'pdf-pdf'] },
+    { title: '混合・特殊', modes: ['psd-pdf', 'psd-tiff', 'color-mono'] },
+    { title: '照合', modes: ['text-verify'] },
+  ];
+  const currentModeMeta = modeMeta[compareMode];
+
+  const selectMode = (mode: CompareMode) => {
+    handleModeChange(mode);
+    setModeMenuOpen(false);
   };
 
   return (
@@ -213,7 +235,14 @@ export default function Sidebar({
           <div className="p-3 border-b border-white/[0.04]">
             <div className="flex gap-1 bg-neutral-950 rounded-lg p-0.5">
               <button
-                onClick={() => { setAppMode('diff-check'); setInitialModeSelect(false); }}
+                onClick={() => {
+                  if (appMode === 'parallel-view') {
+                    transferParallelToDiffView();
+                  } else {
+                    setAppMode('diff-check');
+                    setInitialModeSelect(false);
+                  }
+                }}
                 className={`flex-1 flex items-center justify-center gap-1 py-2 text-xs rounded-md transition-all ${
                   appMode === 'diff-check'
                     ? 'bg-neutral-700 text-neutral-100 shadow-sm'
@@ -251,27 +280,59 @@ export default function Sidebar({
               {compareMode !== 'text-verify' && <span className="text-xs text-neutral-600">{stats.done}/{stats.total}</span>}
             </div>
 
-            <div className="flex gap-1 mb-2">
-              <button onClick={() => handleModeChange('tiff-tiff')} className={`flex-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('tiff-tiff')}`}>TIFF</button>
-              <button onClick={() => handleModeChange('psd-psd')} className={`flex-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('psd-psd')}`}>PSD</button>
-              <button onClick={() => handleModeChange('pdf-pdf')} className={`flex-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('pdf-pdf')}`}>PDF</button>
-              <button onClick={() => handleModeChange('psd-tiff')} className={`flex-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('psd-tiff')}`}>混合</button>
-            </div>
-            <div className="flex gap-1 mb-2">
-              <button onClick={() => handleModeChange('psd-pdf')} className={`flex-1 flex items-center justify-center gap-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('psd-pdf')}`} title="PSD と PDF/画像 の差分">
-                <GitCompare size={12} />PSD↔PDF
-              </button>
+            <div className="relative mb-3">
               <button
-                onClick={() => handleModeChange('color-mono')}
-                className={`flex-1 flex items-center justify-center gap-1 text-xs py-1.5 rounded-md transition-all ${modeButtonClass('color-mono')}`}
-                title="カラー原稿(RGB 350dpi)とモノクロ原稿(Grayscale 600dpi)を比較"
+                onClick={() => setModeMenuOpen(v => !v)}
+                className={`w-full min-h-10 px-3 rounded-lg border flex items-center justify-between gap-3 transition-colors ${modeAccent[compareMode].bg} ${modeAccent[compareMode].text} ${modeAccent[compareMode].border} hover:bg-white/[0.06]`}
+                title="比較モードを選択"
               >
-                <Palette size={12} />カラー/モノクロ
+                <span className="flex items-center gap-2 min-w-0">
+                  <span className="shrink-0">{currentModeMeta.icon}</span>
+                  <span className="truncate text-sm font-semibold">{currentModeMeta.label}</span>
+                </span>
+                <span className="flex items-center gap-2 shrink-0 text-neutral-500">
+                  <span className="text-[10px]">{currentModeMeta.group}</span>
+                  <ChevronDown size={14} className={`transition-transform ${modeMenuOpen ? 'rotate-180' : ''}`} />
+                </span>
               </button>
+
+              {modeMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setModeMenuOpen(false)} />
+                  <div className="absolute left-0 right-0 top-full z-40 mt-2 rounded-lg border border-white/[0.08] bg-neutral-900/95 backdrop-blur-md shadow-[0_12px_36px_rgba(0,0,0,0.45)] p-2">
+                    {modeGroups.map((group, groupIndex) => (
+                      <div key={group.title} className={groupIndex < modeGroups.length - 1 ? 'mb-2' : ''}>
+                        <div className="px-2 pb-1 text-[10px] text-neutral-600 tracking-wide">{group.title}</div>
+                        <div className="space-y-1">
+                          {group.modes.map(mode => {
+                            const meta = modeMeta[mode];
+                            const selected = compareMode === mode;
+                            const accent = modeAccent[mode];
+                            return (
+                              <button
+                                key={mode}
+                                onClick={() => selectMode(mode)}
+                                className={`w-full h-9 px-2 rounded-md border flex items-center justify-between gap-2 text-xs transition-colors ${
+                                  selected
+                                    ? `${accent.bg} ${accent.text} ${accent.border}`
+                                    : 'border-transparent text-neutral-400 hover:text-neutral-200 hover:bg-white/[0.04]'
+                                }`}
+                              >
+                                <span className="flex items-center gap-2 min-w-0">
+                                  <span className="w-5 flex justify-center shrink-0">{meta.icon}</span>
+                                  <span className="truncate font-medium">{meta.label}</span>
+                                </span>
+                                {selected && <span className="h-1.5 w-1.5 rounded-full bg-current shrink-0" />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
-            <button onClick={() => handleModeChange('text-verify')} className={`w-full flex items-center justify-center gap-1.5 text-xs py-1.5 rounded-md transition-all mb-3 ${modeButtonClass('text-verify')}`}>
-              <Type size={12} />テキスト照合
-            </button>
 
             {compareMode === 'text-verify' ? (
               /* テキスト照合モードのコントロール */
@@ -318,19 +379,19 @@ export default function Sidebar({
                 <div className="flex gap-2">
                   <div className={`flex-1 relative rounded-md transition-colors ${dragOverSide === 'A' ? 'ring-1 ring-blue-400/50 bg-blue-900/20' : ''}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('A')} onDragLeave={handleDragLeave} onDrop={handleDrop('A')}>
                     <button onClick={handleFilesAUpload} className="w-full text-center py-2 bg-neutral-700 hover:bg-neutral-600 rounded-md cursor-pointer text-xs transition-colors">
-                      {modeLabels.a} ({filesA.length})
+                      {sourceButtonLabel} ({filesA.length})
                     </button>
                     {dragOverSide === 'A' && <div className="absolute inset-0 flex items-center justify-center bg-blue-600/60 rounded-md text-white text-xs font-medium pointer-events-none">ドロップ</div>}
                   </div>
                   <div className={`flex-1 relative rounded-md transition-colors ${dragOverSide === 'B' ? 'ring-1 ring-green-400/50 bg-green-900/20' : ''}`} onDragOver={handleDragOver} onDragEnter={handleDragEnter('B')} onDragLeave={handleDragLeave} onDrop={handleDrop('B')}>
                     <button onClick={handleFilesBUpload} className="w-full text-center py-2 bg-neutral-700 hover:bg-neutral-600 rounded-md cursor-pointer text-xs transition-colors">
-                      {modeLabels.b} ({filesB.length})
+                      {targetButtonLabel} ({filesB.length})
                     </button>
                     {dragOverSide === 'B' && <div className="absolute inset-0 flex items-center justify-center bg-green-600/60 rounded-md text-white text-xs font-medium pointer-events-none">ドロップ</div>}
                   </div>
                 </div>
 
-                <div className="mt-1.5 text-[10px] text-neutral-600 text-center tracking-wide">ファイル/フォルダをドロップ可能</div>
+                <div className="mt-1.5 text-[10px] text-neutral-600 text-center tracking-wide">{dropHint}</div>
 
                 {/* File name display */}
                 {(filesA.length > 0 || filesB.length > 0) && (
