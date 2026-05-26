@@ -301,7 +301,7 @@ export default function MangaDiffDetector() {
   }, []);
 
   // CLI引数による差分モード自動起動（--diff [mode] folderA folderB [selectionJson]）
-  // mode: "tiff"（デフォルト）, "psd", "psd-tiff"
+  // mode: "tiff"（デフォルト）, "psd", "psd-tiff", "psd-pdf"
   useEffect(() => {
     (async () => {
       try {
@@ -310,13 +310,15 @@ export default function MangaDiffDetector() {
         const diffIdx = args.indexOf('--diff');
         if (diffIdx === -1 || diffIdx + 2 >= args.length) return;
 
-        // モード判定: --diff の次が "tiff" / "psd" / "psd-tiff" ならモード指定、そうでなければフォルダパス
+        // モード判定: --diff の次が "tiff" / "psd" / "psd-tiff" / "psd-pdf" ならモード指定、
+        // そうでなければフォルダパス
         let mode: CompareMode = 'tiff-tiff';
         let folderAIdx = diffIdx + 1;
         const possibleMode = args[diffIdx + 1];
-        if (possibleMode === 'tiff' || possibleMode === 'psd' || possibleMode === 'psd-tiff') {
+        if (possibleMode === 'tiff' || possibleMode === 'psd' || possibleMode === 'psd-tiff' || possibleMode === 'psd-pdf') {
           if (possibleMode === 'psd') mode = 'psd-psd';
           else if (possibleMode === 'psd-tiff') mode = 'psd-tiff';
+          else if (possibleMode === 'psd-pdf') mode = 'psd-pdf';
           else mode = 'tiff-tiff';
           folderAIdx = diffIdx + 2;
         }
@@ -327,11 +329,11 @@ export default function MangaDiffDetector() {
         const selectionJsonArg = args[folderAIdx + 2]; // オプション: 選択範囲JSONパス
         console.log('[CLI] mode:', mode, 'folderA:', folderA, 'folderB:', folderB, 'jsonArg:', selectionJsonArg);
 
-        // 選択範囲JSON読み込み（psd-tiffモード用、オプション）— state設定前に読み込む
+        // 選択範囲JSON読み込み（psd-tiff / psd-pdfモード用、オプション）— state設定前に読み込む
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let jsonData: any = null;
         let bounds: CropBounds | null = null;
-        if (mode === 'psd-tiff' && selectionJsonArg) {
+        if ((mode === 'psd-tiff' || mode === 'psd-pdf') && selectionJsonArg) {
           try {
             const jsonContent: string = await invoke('read_text_file', { path: selectionJsonArg });
             jsonData = JSON.parse(jsonContent);
@@ -355,7 +357,9 @@ export default function MangaDiffDetector() {
         if (jsonData?.filesA) {
           filePathsA = jsonData.filesA;
         } else {
-          const extensionsA = mode === 'psd-psd' || mode === 'psd-tiff' ? ['psd', 'psb'] : ['tif', 'tiff', 'jpg', 'jpeg'];
+          const extensionsA = mode === 'psd-psd' || mode === 'psd-tiff' || mode === 'psd-pdf'
+            ? ['psd', 'psb']
+            : ['tif', 'tiff', 'jpg', 'jpeg'];
           filePathsA = await invoke<string[]>('list_files_in_folder', {
             path: folderA, extensions: extensionsA,
           });
@@ -364,7 +368,13 @@ export default function MangaDiffDetector() {
         if (jsonData?.filesB) {
           filePathsB = jsonData.filesB;
         } else {
-          const extensionsB = mode === 'psd-tiff' ? ['tif', 'tiff', 'jpg', 'jpeg'] : (mode === 'psd-psd' ? ['psd', 'psb'] : ['tif', 'tiff', 'jpg', 'jpeg']);
+          const extensionsB = mode === 'psd-tiff'
+            ? ['tif', 'tiff', 'jpg', 'jpeg']
+            : mode === 'psd-pdf'
+              ? ['pdf', 'tif', 'tiff', 'jpg', 'jpeg', 'png']
+              : mode === 'psd-psd'
+                ? ['psd', 'psb']
+                : ['tif', 'tiff', 'jpg', 'jpeg'];
           filePathsB = await invoke<string[]>('list_files_in_folder', {
             path: folderB, extensions: extensionsB,
           });
