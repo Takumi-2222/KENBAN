@@ -764,7 +764,7 @@ const DiffViewer: React.FC<DiffViewerProps> = (props) => {
                       className="flex-1 min-w-0 border border-white/[0.06] bg-white/[0.02] rounded-xl p-6 flex flex-col items-center justify-center transition-all cursor-pointer hover:border-[rgba(196,164,124,0.3)] hover:bg-[rgba(196,164,124,0.06)] hover:scale-[1.02] group"
                     >
                       <Shuffle size={40} className="mb-2 text-orange-400 group-hover:text-orange-300 transition-colors" />
-                      <p className="text-lg font-semibold text-orange-400 group-hover:text-orange-300 transition-colors">混合</p>
+                      <p className="text-lg font-semibold text-orange-400 group-hover:text-orange-300 transition-colors">PSD-TIFF</p>
                       <p className="text-xs text-neutral-600 mt-1">PSD→TIFF出力の検証</p>
                     </button>
 

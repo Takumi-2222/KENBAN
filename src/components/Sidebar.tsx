@@ -198,7 +198,7 @@ export default function Sidebar({
     'tiff-tiff': { label: 'TIFF', group: '標準比較', icon: <span className="text-[11px] font-semibold">TIFF</span> },
     'psd-psd': { label: 'PSD', group: '標準比較', icon: <span className="text-[11px] font-semibold">PSD</span> },
     'pdf-pdf': { label: 'PDF', group: '標準比較', icon: <FileText size={14} /> },
-    'psd-tiff': { label: 'PSD→TIFF', group: '混合・特殊', icon: <GitCompare size={14} /> },
+    'psd-tiff': { label: 'PSD-TIFF', group: '混合・特殊', icon: <GitCompare size={14} /> },
     'psd-pdf': { label: 'PSD↔PDF', group: '混合・特殊', icon: <GitCompare size={14} /> },
     'color-mono': { label: 'カラー/モノクロ', group: '混合・特殊', icon: <Palette size={14} /> },
     'text-verify': { label: 'テキスト照合', group: '照合', icon: <Type size={14} /> },
