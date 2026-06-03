@@ -11,13 +11,277 @@ use std::hash::{Hash, Hasher};
 use std::io::{Cursor, Write};
 use std::panic;
 use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_fs::FsExt;
 
 const JSON_FOLDER_BASE_PATH: &str = r"G:\共有ドライブ\CLLENN\編集部フォルダ\編集企画部\編集企画_C班(AT業務推進)\DTP制作部\JSONフォルダ";
 const JSON_ACCESS_LOG_BASE_PATH: &str =
     r"G:\共有ドライブ\CLLENN\編集部フォルダ\編集企画部\編集企画_C班(AT業務推進)\DTP制作部\JSON_Log";
+
+// ============== セキュリティ: セッション許可リスト（Phase 2 最小特権） ==============
+// Renderer から渡された任意のパス文字列をそのまま使うのではなく、
+// 「信頼できる入口」(OSダイアログ / 実D&D / CLI / 固定業務フォルダ) を通過した
+// パスだけをセッション中の許可リストへ登録し、利用系コマンドは canonicalize 後に
+// 許可リストと照合する。未登録パスは存在有無に関わらず FORBIDDEN_PATH を返す。
+const FORBIDDEN: &str = "FORBIDDEN_PATH";
+
+struct AllowList {
+    files: Mutex<HashSet<PathBuf>>, // 個別に許可された実体ファイル
+    dirs: Mutex<HashSet<PathBuf>>,  // 再帰的に許可された実体ディレクトリ
+}
+
+static ALLOWLIST: OnceLock<AllowList> = OnceLock::new();
+
+fn allowlist() -> &'static AllowList {
+    ALLOWLIST.get_or_init(|| AllowList {
+        files: Mutex::new(HashSet::new()),
+        dirs: Mutex::new(HashSet::new()),
+    })
+}
+
+/// 信頼できる入口で得たファイルをセッション許可リストへ登録（fs プラグインの実行時スコープも開放）
+fn register_allowed_file(app: &AppHandle, raw: &str) {
+    // フロントが送ってくる「そのままの文字列」と canonical の両方を fs scope に許可
+    let _ = app.fs_scope().allow_file(raw);
+    if let Ok(c) = std::fs::canonicalize(raw) {
+        let _ = app.fs_scope().allow_file(&c);
+        if let Ok(mut set) = allowlist().files.lock() {
+            set.insert(c);
+        }
+    }
+}
+
+/// 信頼できる入口で得たフォルダを再帰的にセッション許可リストへ登録
+fn register_allowed_dir(app: &AppHandle, raw: &str) {
+    let _ = app.fs_scope().allow_directory(raw, true);
+    if let Ok(c) = std::fs::canonicalize(raw) {
+        let _ = app.fs_scope().allow_directory(&c, true);
+        if let Ok(mut set) = allowlist().dirs.lock() {
+            set.insert(c);
+        }
+    }
+}
+
+/// canonical 済みパスが許可リスト（ファイル一致 or 許可ディレクトリ配下）に含まれるか
+fn is_within_allowed(c: &Path) -> bool {
+    if let Ok(files) = allowlist().files.lock() {
+        if files.contains(c) {
+            return true;
+        }
+    }
+    if let Ok(dirs) = allowlist().dirs.lock() {
+        if dirs.iter().any(|d| c.starts_with(d)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 読み取り・列挙用: 実体パスへ解決してから許可判定。未許可は一律 FORBIDDEN_PATH。
+fn ensure_allowed_read(path: &str) -> Result<(), String> {
+    let c = std::fs::canonicalize(path).map_err(|_| FORBIDDEN.to_string())?;
+    if is_within_allowed(&c) {
+        Ok(())
+    } else {
+        Err(FORBIDDEN.to_string())
+    }
+}
+
+/// 書き込み・新規作成用: ファイル自体が未存在でも親ディレクトリを実体パス解決して判定。
+fn ensure_allowed_write(path: &str) -> Result<(), String> {
+    let p = Path::new(path);
+    let resolved = match std::fs::canonicalize(p) {
+        Ok(c) => c,
+        Err(_) => {
+            let parent = p.parent().ok_or_else(|| FORBIDDEN.to_string())?;
+            let file_name = p.file_name().ok_or_else(|| FORBIDDEN.to_string())?;
+            let cp = std::fs::canonicalize(parent).map_err(|_| FORBIDDEN.to_string())?;
+            cp.join(file_name)
+        }
+    };
+    if is_within_allowed(&resolved) {
+        Ok(())
+    } else {
+        Err(FORBIDDEN.to_string())
+    }
+}
+
+/// 保存ファイル名の厳格検証（標準設計ガイドライン 5.3）
+fn validate_file_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("invalid file name: empty".into());
+    }
+    if name != name.trim() {
+        return Err("invalid file name: leading/trailing whitespace".into());
+    }
+    if name.ends_with('.') {
+        return Err("invalid file name: trailing dot".into());
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err("invalid file name: path separator".into());
+    }
+    if name.contains("..") {
+        return Err("invalid file name: traversal".into());
+    }
+    if name.chars().any(|ch| (ch as u32) < 0x20) {
+        return Err("invalid file name: control character".into());
+    }
+    if name
+        .chars()
+        .any(|ch| matches!(ch, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+    {
+        return Err("invalid file name: forbidden character".into());
+    }
+    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    const RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if RESERVED.contains(&stem.as_str()) {
+        return Err("invalid file name: reserved name".into());
+    }
+    Ok(())
+}
+
+/// 起動引数や固定業務フォルダなど、信頼できる初期パスを許可リストへ登録
+fn seed_trusted_roots(app: &AppHandle) {
+    // アプリ専用 Temp（プレビュー/差分の出力先）
+    if let Ok(temp) = get_kenban_temp_dir() {
+        register_allowed_dir(app, &temp.to_string_lossy());
+    }
+    // 固定業務フォルダ（JSON 共有ドライブ）と保存先デスクトップフォルダ
+    register_allowed_dir(app, JSON_FOLDER_BASE_PATH);
+    register_allowed_dir(app, JSON_ACCESS_LOG_BASE_PATH);
+    if let Some(desktop) = dirs::desktop_dir() {
+        let out = desktop.join("Script_Output");
+        let _ = fs::create_dir_all(&out);
+        register_allowed_dir(app, &out.to_string_lossy());
+    }
+    // CLI 引数で渡された実在パス（選択JSON・フォルダ）。CLI はユーザー/自動化由来の信頼入口。
+    for arg in std::env::args().skip(1) {
+        let p = Path::new(&arg);
+        if p.is_dir() {
+            register_allowed_dir(app, &arg);
+        } else if p.is_file() {
+            register_allowed_file(app, &arg);
+        }
+    }
+}
+
+/// 起動可能な外部 exe のパスを検証（任意実行ファイルの起動による RCE を防止）。
+/// Renderer から渡せるのは「想定された実行ファイル名と一致する実在 exe」のみ。
+fn validate_executable(path: &str, expected_lower_names: &[&str]) -> Result<PathBuf, String> {
+    let p = PathBuf::from(path);
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.to_ascii_lowercase())
+        .ok_or_else(|| "invalid executable path".to_string())?;
+    if !expected_lower_names.contains(&name.as_str()) {
+        return Err(format!("forbidden executable: {}", name));
+    }
+    if !p.exists() {
+        return Err(format!("executable not found: {}", p.display()));
+    }
+    Ok(p)
+}
+
+// ============== セキュリティ用コマンド: 信頼できる入口（OSダイアログ） ==============
+
+#[derive(Deserialize)]
+struct DialogFilter {
+    name: String,
+    extensions: Vec<String>,
+}
+
+/// OSファイル選択ダイアログ（Rust側で開く信頼入口）。選択結果をセッション許可リストへ登録して返す。
+#[tauri::command]
+async fn pick_files(
+    app: AppHandle,
+    multiple: bool,
+    filters: Vec<DialogFilter>,
+) -> Result<Vec<String>, String> {
+    let app2 = app.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut builder = app2.dialog().file();
+        for f in &filters {
+            let exts: Vec<&str> = f.extensions.iter().map(|s| s.as_str()).collect();
+            builder = builder.add_filter(f.name.as_str(), &exts);
+        }
+        let result: Vec<String> = if multiple {
+            builder
+                .blocking_pick_files()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.to_string())
+                .collect()
+        } else {
+            builder
+                .blocking_pick_file()
+                .map(|p| vec![p.to_string()])
+                .unwrap_or_default()
+        };
+        let _ = tx.send(result);
+    });
+    let paths = rx.recv().map_err(|e| e.to_string())?;
+    for p in &paths {
+        register_allowed_file(&app, p);
+    }
+    Ok(paths)
+}
+
+/// OS保存ダイアログ（Rust側で開く信頼入口）。保存先を書き込み許可へ登録して返す。
+#[tauri::command]
+async fn pick_save_file(
+    app: AppHandle,
+    default_name: Option<String>,
+    filters: Vec<DialogFilter>,
+) -> Result<Option<String>, String> {
+    let app2 = app.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut builder = app2.dialog().file();
+        for f in &filters {
+            let exts: Vec<&str> = f.extensions.iter().map(|s| s.as_str()).collect();
+            builder = builder.add_filter(f.name.as_str(), &exts);
+        }
+        if let Some(name) = default_name {
+            builder = builder.set_file_name(name);
+        }
+        let path = builder.blocking_save_file().map(|p| p.to_string());
+        let _ = tx.send(path);
+    });
+    let path = rx.recv().map_err(|e| e.to_string())?;
+    if let Some(ref p) = path {
+        register_allowed_file(&app, p);
+    }
+    Ok(path)
+}
+
+/// OSフォルダ選択ダイアログ（Rust側で開く信頼入口）。選択フォルダを再帰許可して返す。
+#[tauri::command]
+async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
+    let app2 = app.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let folder = app2
+            .dialog()
+            .file()
+            .blocking_pick_folder()
+            .map(|p| p.to_string());
+        let _ = tx.send(folder);
+    });
+    let folder = rx.recv().map_err(|e| e.to_string())?;
+    if let Some(ref f) = folder {
+        register_allowed_dir(&app, f);
+    }
+    Ok(folder)
+}
 
 // ============== 画像キャッシュ ==============
 struct CachedImage {
@@ -158,6 +422,7 @@ struct PsdImageResult {
 // 失敗時のみpsd crateにフォールオーバー
 #[tauri::command]
 fn parse_psd(path: String) -> Result<PsdImageResult, String> {
+    ensure_allowed_read(&path)?;
     let cache_key = format!("psd_v2:{}", versioned_path_key(&path));
 
     // ディスクキャッシュチェック
@@ -190,6 +455,7 @@ fn parse_psd(path: String) -> Result<PsdImageResult, String> {
 // ファイルをシステムのデフォルトアプリで開く
 #[tauri::command]
 fn open_file_with_default_app(path: String) -> Result<(), String> {
+    ensure_allowed_read(&path)?;
     open::that(&path).map_err(|e| format!("Failed to open file: {}", e))
 }
 
@@ -242,14 +508,15 @@ fn find_photoshop_path() -> Option<PathBuf> {
 
 #[tauri::command]
 fn open_file_in_photoshop(path: String, photoshop_path: Option<String>) -> Result<(), String> {
-    let photoshop_path = photoshop_path
-        .filter(|p| !p.trim().is_empty())
-        .map(PathBuf::from)
-        .or_else(find_photoshop_path)
-        .ok_or_else(|| {
+    ensure_allowed_read(&path)?;
+    let photoshop_path = match photoshop_path.filter(|p| !p.trim().is_empty()) {
+        // Renderer 由来の exe パスは「Photoshop.exe」に限定して実在検証（任意exe起動の防止）
+        Some(user) => validate_executable(&user, &["photoshop.exe"])?,
+        None => find_photoshop_path().ok_or_else(|| {
             "Photoshop.exe が見つかりません。設定から Photoshop.exe を選択してください。"
                 .to_string()
-        })?;
+        })?,
+    };
 
     if !photoshop_path.exists() {
         return Err(format!(
@@ -314,14 +581,14 @@ fn open_file_in_comic_bridge(
     path: String,
     comic_bridge_path: Option<String>,
 ) -> Result<(), String> {
-    let exe_path = comic_bridge_path
-        .filter(|p| !p.trim().is_empty())
-        .map(PathBuf::from)
-        .or_else(find_comic_bridge_path)
-        .ok_or_else(|| {
+    ensure_allowed_read(&path)?;
+    let exe_path = match comic_bridge_path.filter(|p| !p.trim().is_empty()) {
+        Some(user) => validate_executable(&user, &["comic-bridge.exe"])?,
+        None => find_comic_bridge_path().ok_or_else(|| {
             "comic-bridge.exe が見つかりません。設定から comic-bridge.exe を選択してください。"
                 .to_string()
-        })?;
+        })?,
+    };
 
     if !exe_path.exists() {
         return Err(format!(
@@ -361,6 +628,7 @@ fn save_screenshot(image_data: String, file_name: String) -> Result<SaveScreensh
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "screenshot".to_string());
+    validate_file_name(&base_name)?;
 
     // 重複回避のためタイムスタンプを追加
     let timestamp = std::time::SystemTime::now()
@@ -390,6 +658,17 @@ fn save_screenshot(image_data: String, file_name: String) -> Result<SaveScreensh
 // フォルダをエクスプローラーで開く
 #[tauri::command]
 fn open_folder(path: String) -> Result<(), String> {
+    // 許可ディレクトリ配下、または「許可済みファイルを含むフォルダ」のみ Explorer で開ける
+    let c = std::fs::canonicalize(&path).map_err(|_| FORBIDDEN.to_string())?;
+    let allowed = is_within_allowed(&c)
+        || allowlist()
+            .files
+            .lock()
+            .map(|files| files.iter().any(|f| f.starts_with(&c)))
+            .unwrap_or(false);
+    if !allowed {
+        return Err(FORBIDDEN.to_string());
+    }
     open::that(&path).map_err(|e| format!("Failed to open folder: {}", e))
 }
 
@@ -472,6 +751,7 @@ fn find_mojiq_path() -> Option<PathBuf> {
 // MojiQでPDFを開く（ページ指定付き）
 #[tauri::command]
 fn open_pdf_in_mojiq(pdf_path: String, page: Option<u32>) -> Result<(), String> {
+    ensure_allowed_read(&pdf_path)?;
     println!(
         "[MojiQ] open_pdf_in_mojiq called: pdf_path={}, page={:?}",
         pdf_path, page
@@ -532,6 +812,7 @@ fn decode_and_resize_image(
     max_width: u32,
     max_height: u32,
 ) -> Result<ImageResult, String> {
+    ensure_allowed_read(&path)?;
     let cache_key = format!("{}:{}x{}", versioned_path_key(&path), max_width, max_height);
 
     // 1. メモリキャッシュチェック
@@ -622,6 +903,11 @@ async fn preload_images(
     max_width: u32,
     max_height: u32,
 ) -> Result<Vec<String>, String> {
+    // 未許可パスを除外（信頼できる入口を通過したパスのみプリロード）
+    let paths: Vec<String> = paths
+        .into_iter()
+        .filter(|p| ensure_allowed_read(p).is_ok())
+        .collect();
     // 既にメモリキャッシュにあるパスを除外
     let paths_to_load: Vec<String> = {
         let cache = state.image_cache.lock().map_err(|e| e.to_string())?;
@@ -749,6 +1035,7 @@ fn cleanup_preview_cache() -> Result<u32, String> {
 // フォルダ内のファイル一覧を取得
 #[tauri::command]
 fn list_files_in_folder(path: String, extensions: Vec<String>) -> Result<Vec<String>, String> {
+    ensure_allowed_read(&path)?;
     let dir = std::fs::read_dir(&path).map_err(|e| format!("Failed to read directory: {}", e))?;
 
     let mut files: Vec<String> = dir
@@ -1933,6 +2220,8 @@ fn compute_diff_color_mono(
     threshold: u8,
     dark_threshold: Option<u8>, // この値以下を「濃い」として比較対象にする (default 200)
 ) -> Result<DiffHeatmapResult, String> {
+    ensure_allowed_read(&path_a)?;
+    ensure_allowed_read(&path_b)?;
     let (img_a, img_b) = rayon::join(|| decode_image_file(&path_a), || decode_image_file(&path_b));
     let img_a = img_a?;
     let img_b = img_b?;
@@ -1999,6 +2288,8 @@ fn check_diff_color_mono(
     threshold: u8,
     dark_threshold: Option<u8>,
 ) -> Result<DiffCheckHeatmapResult, String> {
+    ensure_allowed_read(&path_a)?;
+    ensure_allowed_read(&path_b)?;
     let (img_a, img_b) = rayon::join(|| decode_image_file(&path_a), || decode_image_file(&path_b));
     let img_a = img_a?;
     let img_b = img_b?;
@@ -2137,6 +2428,8 @@ fn compute_diff_simple(
     path_b: String,
     threshold: u8,
 ) -> Result<DiffSimpleResult, String> {
+    ensure_allowed_read(&path_a)?;
+    ensure_allowed_read(&path_b)?;
     // 2ファイル並列デコード
     let (img_a, img_b) = rayon::join(|| decode_image_file(&path_a), || decode_image_file(&path_b));
     let img_a = img_a?;
@@ -2207,6 +2500,8 @@ fn compute_diff_heatmap(
     crop_bounds: CropBounds,
     threshold: u8,
 ) -> Result<DiffHeatmapResult, String> {
+    ensure_allowed_read(&psd_path)?;
+    ensure_allowed_read(&tiff_path)?;
     // 並列デコード
     let (psd_result, tiff_result) = rayon::join(
         || decode_psd_to_image(&psd_path),
@@ -2287,6 +2582,8 @@ fn check_diff_simple(
     path_b: String,
     threshold: u8,
 ) -> Result<DiffCheckSimpleResult, String> {
+    ensure_allowed_read(&path_a)?;
+    ensure_allowed_read(&path_b)?;
     // 2ファイル並列デコード
     let (img_a, img_b) = rayon::join(|| decode_image_file(&path_a), || decode_image_file(&path_b));
     let img_a = img_a?;
@@ -2337,6 +2634,8 @@ fn check_diff_heatmap(
     crop_bounds: CropBounds,
     threshold: u8,
 ) -> Result<DiffCheckHeatmapResult, String> {
+    ensure_allowed_read(&psd_path)?;
+    ensure_allowed_read(&tiff_path)?;
     // 並列デコード
     let (psd_result, tiff_result) = rayon::join(
         || decode_psd_to_image(&psd_path),
@@ -2455,6 +2754,8 @@ fn compute_pdf_diff(
     dpi: f32,
     threshold: u8,
 ) -> Result<DiffSimpleResult, String> {
+    ensure_allowed_read(&path_a)?;
+    ensure_allowed_read(&path_b)?;
     let pdfium = get_pdfium()?;
 
     let (samples_a, wa, ha) = render_pdf_page_pdfium(&pdfium, &path_a, page, dpi, true)?;
@@ -2653,6 +2954,8 @@ fn compute_diff_psd_pdf(
     page: Option<u32>,
     diff_style: Option<String>,
 ) -> Result<DiffHeatmapResult, String> {
+    ensure_allowed_read(&psd_path)?;
+    ensure_allowed_read(&ref_path)?;
     let scale = scale.unwrap_or(1.0).clamp(0.5, 2.0);
     let offset_x = offset_x.unwrap_or(0);
     let offset_y = offset_y.unwrap_or(0);
@@ -2767,6 +3070,8 @@ fn check_diff_psd_pdf(
     page: Option<u32>,
     diff_style: Option<String>,
 ) -> Result<DiffCheckHeatmapResult, String> {
+    ensure_allowed_read(&psd_path)?;
+    ensure_allowed_read(&ref_path)?;
     let scale = scale.unwrap_or(1.0).clamp(0.5, 2.0);
     let offset_x = offset_x.unwrap_or(0);
     let offset_y = offset_y.unwrap_or(0);
@@ -2977,6 +3282,8 @@ fn auto_align_psd_pdf(
     page: Option<u32>,
     diff_style: Option<String>,
 ) -> Result<AutoAlignResult, String> {
+    ensure_allowed_read(&psd_path)?;
+    ensure_allowed_read(&ref_path)?;
     let anchor = anchor.as_deref().unwrap_or("ref");
     let anchor_is_psd = anchor == "psd";
     let page = page.unwrap_or(0);
@@ -3130,6 +3437,7 @@ fn render_pdf_page(
     dpi: f32,
     split_side: Option<String>,
 ) -> Result<PdfPageImage, String> {
+    ensure_allowed_read(&path)?;
     let pdfium = get_pdfium()?;
     // 並列ビュー表示用なので print quality を無効化（速度優先）
     let (samples, width, height) = render_pdf_page_pdfium(&pdfium, &path, page, dpi, false)?;
@@ -3167,6 +3475,7 @@ fn render_pdf_page(
 // PDFの総ページ数を取得
 #[tauri::command]
 fn get_pdf_page_count(path: String) -> Result<u32, String> {
+    ensure_allowed_read(&path)?;
     let pdfium = get_pdfium()?;
     let doc = pdfium
         .load_pdf_from_file(&path, None)
@@ -3353,6 +3662,7 @@ fn write_json_access_log(action: &str, file_path: &str, data: Option<&serde_json
 
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
+    ensure_allowed_read(&path)?;
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("ファイル読み込みエラー: {}", e))?;
     let parsed = serde_json::from_str::<serde_json::Value>(&content).ok();
@@ -3362,6 +3672,7 @@ fn read_text_file(path: String) -> Result<String, String> {
 
 #[tauri::command]
 fn write_text_file(path: String, content: String) -> Result<(), String> {
+    ensure_allowed_write(&path)?;
     std::fs::write(&path, content.as_bytes())
         .map_err(|e| format!("ファイル書き込みエラー: {}", e))?;
     let parsed = serde_json::from_str::<serde_json::Value>(&content).ok();
@@ -3410,13 +3721,44 @@ pub fn run() {
             get_cli_args,
             read_text_file,
             write_text_file,
-            cleanup_preview_cache
+            cleanup_preview_cache,
+            pick_files,
+            pick_folder,
+            pick_save_file
         ])
-        .setup(|_app| {
-            #[cfg(feature = "devtools")]
+        .setup(|app| {
+            let handle = app.handle().clone();
+            // 固定業務フォルダ・アプリ専用Temp・CLI引数などの信頼ルートを許可リストへ登録
+            seed_trusted_roots(&handle);
+
+            // 実ドラッグ&ドロップ（OSからメインプロセスへ直接渡るパス）を信頼入口として登録。
+            // Renderer 由来の文字列ではなく Tauri コアのイベントなので XSS から悪用できない。
+            if let Some(win) = app.get_webview_window("main") {
+                let drop_handle = handle.clone();
+                win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop {
+                        paths, ..
+                    }) = event
+                    {
+                        for p in paths {
+                            let s = p.to_string_lossy();
+                            if p.is_dir() {
+                                register_allowed_dir(&drop_handle, &s);
+                            } else {
+                                register_allowed_file(&drop_handle, &s);
+                            }
+                        }
+                    }
+                });
+            }
+
+            // devtools は本番ビルドに同梱しない（Cargo.toml の devtools feature を撤去済み）。
+            // 開発(debug)ビルドでは Tauri が devtools を利用可能にするため、F12/右クリックで開ける。
+            #[cfg(debug_assertions)]
             {
-                let window = _app.get_webview_window("main").unwrap();
-                window.open_devtools();
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
             }
             Ok(())
         })

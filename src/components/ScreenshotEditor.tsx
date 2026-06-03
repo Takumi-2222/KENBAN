@@ -1,6 +1,6 @@
 ﻿import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { X, Square, Pen, Copy, Check, ZoomIn, ZoomOut, Maximize, Minus, Plus, Crop, Undo2, Hand, Type, MousePointer2, Download } from 'lucide-react';
-import { save } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
 import { writeFile } from '@tauri-apps/plugin-fs';
 
 interface Annotation {
@@ -1745,9 +1745,10 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
         }, 'image/png');
       });
 
-      const filePath = await save({
+      // セキュリティ: 保存先は Rust の保存ダイアログ経由で取得（書き込み許可に登録される）
+      const filePath = await invoke<string | null>('pick_save_file', {
+        defaultName: 'screenshot.png',
         filters: [{ name: 'PNG画像', extensions: ['png'] }],
-        defaultPath: 'screenshot.png',
       });
 
       if (filePath) {

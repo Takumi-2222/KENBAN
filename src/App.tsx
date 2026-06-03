@@ -5,7 +5,7 @@ import { pdfCache, checkPdfFileSize, globalOptimizeProgress, setOptimizeProgress
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { readFile as tauriReadFile, readDir } from '@tauri-apps/plugin-fs';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { open, ask } from '@tauri-apps/plugin-dialog';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import GDriveFolderBrowser from './components/GDriveFolderBrowser';
@@ -116,9 +116,30 @@ export default function MangaDiffDetector() {
     }
   }, []);
 
+  // セキュリティ: OSダイアログは Rust 側の pick_files / pick_folder 経由で開く。
+  // 選択されたパスは Rust のセッション許可リストへ登録され、以降の読み込みが許可される。
+  // 戻り値の形は plugin-dialog の open() と互換（string | string[] | null）。
+  const pickPath = useCallback(async (opts: {
+    directory?: boolean;
+    multiple?: boolean;
+    title?: string;
+    filters?: { name: string; extensions: string[] }[];
+  }): Promise<string | string[] | null> => {
+    if (opts.directory) {
+      const folder = await invoke<string | null>('pick_folder');
+      return folder ?? null;
+    }
+    const paths = await invoke<string[]>('pick_files', {
+      multiple: !!opts.multiple,
+      filters: (opts.filters ?? []).map(f => ({ name: f.name, extensions: f.extensions })),
+    });
+    if (!paths || paths.length === 0) return null;
+    return opts.multiple ? paths : paths[0];
+  }, []);
+
   const handleSelectPhotoshopExecutable = useCallback(async () => {
     try {
-      const selected = await open({
+      const selected = await pickPath({
         title: 'Photoshop.exe を選択',
         multiple: false,
         filters: [{ name: 'Photoshop', extensions: ['exe'] }],
@@ -1189,7 +1210,7 @@ export default function MangaDiffDetector() {
 
       // PDFモードの場合はファイル選択、その他はフォルダ選択
       if (compareMode === 'pdf-pdf') {
-        const selected = await open({
+        const selected = await pickPath({
           directory: false,
           multiple: false,
           title: 'PDFファイルAを選択',
@@ -1209,7 +1230,7 @@ export default function MangaDiffDetector() {
         setDiffFolderA(null);
         setFilesA(filtered);
       } else {
-        const selected = await open({
+        const selected = await pickPath({
           directory: true,
           multiple: false,
           title: 'フォルダAを選択',
@@ -1245,7 +1266,7 @@ export default function MangaDiffDetector() {
 
       // PDFモードの場合はファイル選択、その他はフォルダ選択
       if (compareMode === 'pdf-pdf' || compareMode === 'psd-pdf') {
-        const selected = await open({
+        const selected = await pickPath({
           directory: false,
           multiple: false,
           title: compareMode === 'psd-pdf' ? 'PDF/画像ファイルを選択' : 'PDFファイルBを選択',
@@ -1267,7 +1288,7 @@ export default function MangaDiffDetector() {
         setDiffFolderB(null);
         setFilesB(filtered);
       } else {
-        const selected = await open({
+        const selected = await pickPath({
           directory: true,
           multiple: false,
           title: 'フォルダBを選択',
@@ -2419,7 +2440,7 @@ export default function MangaDiffDetector() {
   // フォルダ選択
   const handleSelectParallelFolder = async (side: 'A' | 'B') => {
     try {
-      const selected = await open({
+      const selected = await pickPath({
         directory: true,
         multiple: false,
         title: `フォルダ${side}を選択`,
@@ -2459,7 +2480,7 @@ export default function MangaDiffDetector() {
   // PDFファイル選択（並列ビュー用）
   const handleSelectParallelPdf = async (side: 'A' | 'B') => {
     try {
-      const selected = await open({
+      const selected = await pickPath({
         directory: false,
         multiple: false,
         title: `PDF${side}を選択`,
@@ -3107,7 +3128,7 @@ export default function MangaDiffDetector() {
   // PSDフォルダ選択
   const handleSelectTextVerifyFolder = useCallback(async () => {
     try {
-      const selected = await open({
+      const selected = await pickPath({
         directory: true,
         multiple: false,
         title: 'PSDフォルダを選択',
@@ -3160,7 +3181,7 @@ export default function MangaDiffDetector() {
 
   // テキストメモファイル選択
   const handleSelectTextVerifyMemo = useCallback(async () => {
-    const selected = await open({
+    const selected = await pickPath({
       title: 'テキストメモを選択',
       filters: [{ name: 'テキストファイル', extensions: ['txt', 'text', 'csv'] }],
     });

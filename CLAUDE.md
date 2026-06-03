@@ -158,6 +158,40 @@ PSDが選択可能な場面（テキスト照合 / 差分ビュー / 並列ビ�
 - GitHub Releases から latest.json を参照
 - productName は ASCII (`KENBAN`) でないと latest.json 生成が壊れる
 
+## セキュリティ設計（ローカルファイルアクセス制御 / Phase 2 最小特権）
+「セキュリティ標準設計ガイドライン」に準拠。ProGen型（OSダイアログ + 実D&D 中心）。
+
+### 基本方針
+- **Renderer から任意パス文字列を渡して許可登録する API は公開しない**（§1.1）。
+- 利用系コマンドは「信頼できる入口」を通過したパスのみ処理し、未登録は一律 `FORBIDDEN_PATH` を返す。
+
+### セッション許可リスト（`src-tauri/src/lib.rs`）
+- `AllowList { files, dirs }`: canonicalize 済み実体パスを保持する `OnceLock<Mutex<HashSet>>`。
+- `ensure_allowed_read(path)` / `ensure_allowed_write(path)`: `std::fs::canonicalize`（書込は親dir解決）後に照合。`..`/シンボリックリンクは canonicalize で吸収。
+- **信頼できる入口（登録は Rust 内部のみ）**:
+  1. `pick_files` / `pick_folder` コマンド — Rust 側で OS ダイアログを開き選択結果を登録。
+  2. `setup()` の `WindowEvent::DragDrop` — 実D&Dのパスを登録（OS由来でXSS悪用不可）。
+  3. CLI 引数（起動時の実在パス）。
+  4. 固定業務フォルダ（`JSON_FOLDER_BASE_PATH` 等）/ アプリ専用 Temp / `Desktop\Script_Output` を静的登録（`seed_trusted_roots`）。
+- plugin-fs（`readFile`/`readDir`）は capabilities の `"**"` を撤廃し、登録時に `app.fs_scope().allow_file/allow_directory` で動的開放。
+- **全利用系コマンド**（`parse_psd` / `decode_*` / `compute_diff_*` / `check_diff_*` / `render_pdf_page` / `get_pdf_page_count` / `read_text_file` / `write_text_file` / `open_*` 等）の入口で許可判定を実施。
+- 外部exe起動は `validate_executable`（`photoshop.exe`/`comic-bridge.exe`限定・実在検証）。保存名は `validate_file_name`（§5.3）。
+
+### フロントエンド（`src/App.tsx`）
+- OSダイアログは plugin-dialog の `open()` を使わず、Rust 経由の `pickPath()`（= `pick_files`/`pick_folder`）でのみ開く。選択パスが許可リストに登録される。
+
+### 設定
+- `tauri.conf.json`: CSP に `object-src 'none' / base-uri 'self' / form-action 'self'`、`assetProtocol.scope` は `$TEMP/kenban_preview/**` に限定。`withGlobalTauri: true`（DevTools検証用）。
+  - `script-src`/`style-src` の `unsafe-inline`/`unsafe-eval` は pdfjs/React/Tailwind の都合で暫定例外（将来撤廃推奨）。
+- `Cargo.toml`: 本番に `devtools` feature を同梱しない（dev は `#[cfg(debug_assertions)]` で devtools 自動オープン）。
+- `capabilities/default.json`: fs スコープに `"**"` を置かない。
+
+### 回帰チェック
+- `npm run check:security`（`scripts/check-security-regression.mjs`、10項目）。危険な設定の先祖返りを静的検出。**リリース前に必ず実行**。
+
+### 確認方法
+- 詳細は `0603\KENBAN_確認手順.md`。アプリ起動 → F12 Console で `window.__TAURI__.core.invoke` を取得し、未登録/保護パス/任意書込/任意exe が `FORBIDDEN_PATH` で弾かれることを確認。
+
 ## PSDデコード戦略
 `psd` crate v0.3.5 はZIP圧縮や16bit深度でpanic（強制終了）するため、二段構えで対処:
 1. **psd crate** を `catch_unwind` でラップして試行（レイヤー合成等の高機能）
