@@ -111,16 +111,47 @@ export default function ScreenshotEditor({ imageData, onClose }: ScreenshotEdito
 
   // 画像を読み込み
   useEffect(() => {
-    const img = new Image();
-    img.onload = () => {
+    let cancelled = false;
+    // imageData は convertFileSrc 由来の asset プロトコル URL のことがある。
+    // crossOrigin を付けずに canvas へ描画すると canvas が tainted となり、
+    // 保存/コピー時の toBlob()/toDataURL() が SecurityError で失敗する。
+    // → crossOrigin='anonymous' で読み込み、canvas を汚さないようにする。
+    // data:/blob: URL では crossOrigin は無害。CORS 非対応で読み込み失敗した場合のみ
+    // crossOrigin なしで再読み込みして表示だけは維持する（保存は不可になる）。
+    const needsCrossOrigin = !/^(data:|blob:)/i.test(imageData);
+
+    const finish = (img: HTMLImageElement) => {
+      if (cancelled) return;
       setImageSize({ width: img.width, height: img.height });
       setLoadedImage(img);
     };
+
+    const loadWithoutCrossOrigin = () => {
+      const img = new Image();
+      img.onload = () => finish(img);
+      img.onerror = () => {
+        if (cancelled) return;
+        alert('画像の読み込みに失敗しました');
+        onClose();
+      };
+      img.src = imageData;
+    };
+
+    const img = new Image();
+    if (needsCrossOrigin) img.crossOrigin = 'anonymous';
+    img.onload = () => finish(img);
     img.onerror = () => {
-      alert('画像の読み込みに失敗しました');
-      onClose();
+      if (cancelled) return;
+      // CORS 付き読み込みに失敗したら crossOrigin なしでフォールバック（表示優先）
+      if (needsCrossOrigin) loadWithoutCrossOrigin();
+      else {
+        alert('画像の読み込みに失敗しました');
+        onClose();
+      }
     };
     img.src = imageData;
+
+    return () => { cancelled = true; };
   }, [imageData, onClose]);
 
   // 現在表示する領域（クロップされている場合はクロップ領域）

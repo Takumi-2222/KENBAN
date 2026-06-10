@@ -18,6 +18,8 @@ import {
   Download,
   ChevronDown,
   Check,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import type { ParallelFileEntry } from '../types';
 
@@ -124,10 +126,10 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
     parallelZoomB,
     parallelPanA,
     parallelPanB,
-    setParallelZoomA: _setParallelZoomA,
-    setParallelZoomB: _setParallelZoomB,
-    setParallelPanA: _setParallelPanA,
-    setParallelPanB: _setParallelPanB,
+    setParallelZoomA,
+    setParallelZoomB,
+    setParallelPanA,
+    setParallelPanB,
     handleParallelMouseDownA,
     handleParallelMouseDownB,
     handleParallelMouseMoveA,
@@ -242,6 +244,29 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
     setSpreadSplitModeA,
     setSpreadSplitModeB,
   ]);
+
+  // 画像ズーム（Ctrl+ホイール / ツールバーの±ボタン）
+  // 同期モードでは両パネルを同時に、非同期モードでは対象パネルのみズーム
+  const ZOOM_MIN = 0.1;
+  const ZOOM_MAX = 5;
+  const zoomParallel = useCallback((side: 'A' | 'B', factor: number) => {
+    const clamp = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z * factor));
+    if (parallelSyncMode) {
+      setParallelZoomA(z => clamp(z));
+      setParallelZoomB(z => clamp(z));
+    } else if (side === 'A') {
+      setParallelZoomA(z => clamp(z));
+    } else {
+      setParallelZoomB(z => clamp(z));
+    }
+  }, [parallelSyncMode, setParallelZoomA, setParallelZoomB]);
+
+  const resetParallelZoom = useCallback(() => {
+    setParallelZoomA(1);
+    setParallelZoomB(1);
+    setParallelPanA({ x: 0, y: 0 });
+    setParallelPanB({ x: 0, y: 0 });
+  }, [setParallelZoomA, setParallelZoomB, setParallelPanA, setParallelPanB]);
 
   // ハンバーガーメニュー（ショートカット説明）
   const helpButtonRef = useRef<HTMLButtonElement>(null);
@@ -692,11 +717,12 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
               {(parallelFilesA.length > 0 || parallelFilesB.length > 0) && (
                 <div className="relative flex items-center">
                   <div className="flex rounded-lg overflow-hidden bg-neutral-950 p-0.5 gap-0.5">
-                    {/* 同期ボタン */}
+                    {/* 同期ボタン: クリックで即座に同期へ戻す（現在のページ位置を維持） */}
                     <button
                       onClick={() => {
                         if (!parallelSyncMode) {
-                          setShowSyncOptions(true);
+                          setParallelSyncMode(true);
+                          setShowSyncOptions(false);
                         }
                       }}
                       className={`px-3 py-1.5 text-xs flex items-center gap-1 rounded transition ${
@@ -704,7 +730,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                           ? 'bg-neutral-700 text-neutral-100 shadow-sm'
                           : 'text-neutral-500 hover:text-neutral-400'
                       }`}
-                      title="同期モード"
+                      title="同期モードに戻す"
                     >
                       <Link2 size={12} />同期
                     </button>
@@ -727,6 +753,16 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                       <Unlink2 size={12} />非同期
                     </button>
                   </div>
+                  {/* 非同期時のみ: ページを合わせて同期し直すオプション（任意） */}
+                  {!parallelSyncMode && (
+                    <button
+                      onClick={() => setShowSyncOptions(!showSyncOptions)}
+                      className={`ml-0.5 px-1.5 py-1.5 rounded transition ${showSyncOptions ? 'text-neutral-200 bg-white/[0.06]' : 'text-neutral-500 hover:text-neutral-300'}`}
+                      title="同期オプション（ページを合わせて再同期）"
+                    >
+                      <ChevronDown size={12} />
+                    </button>
+                  )}
                   {/* 再同期オプションポップアップ */}
                   {!parallelSyncMode && showSyncOptions && (
                     <>
@@ -760,6 +796,37 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                   )}
                 </div>
               )}
+              {/* ズーム操作（Ctrl+ホイールでも可） */}
+              {(parallelFilesA.length > 0 || parallelFilesB.length > 0) && (() => {
+                const activeZoom = parallelSyncMode
+                  ? parallelZoomA
+                  : (parallelActivePanel === 'A' ? parallelZoomA : parallelZoomB);
+                return (
+                  <div className="flex items-center rounded-lg overflow-hidden bg-neutral-950 p-0.5 gap-0.5" title="Ctrl+ホイール / Ctrl +/- でもズームできます">
+                    <button
+                      onClick={() => zoomParallel(parallelActivePanel, 1 / 1.25)}
+                      className="px-2 py-1.5 text-neutral-400 hover:text-neutral-100 rounded transition"
+                      title="ズームアウト (Ctrl -)"
+                    >
+                      <ZoomOut size={12} />
+                    </button>
+                    <button
+                      onClick={resetParallelZoom}
+                      className="px-1.5 py-1.5 text-xs text-neutral-300 hover:text-neutral-100 rounded transition tabular-nums min-w-[3rem]"
+                      title="等倍に戻す (Ctrl 0)"
+                    >
+                      {Math.round(activeZoom * 100)}%
+                    </button>
+                    <button
+                      onClick={() => zoomParallel(parallelActivePanel, 1.25)}
+                      className="px-2 py-1.5 text-neutral-400 hover:text-neutral-100 rounded transition"
+                      title="ズームイン (Ctrl +)"
+                    >
+                      <ZoomIn size={12} />
+                    </button>
+                  </div>
+                );
+              })()}
               {/* 更新ボタン */}
               {(parallelFilesA.length > 0 || parallelFilesB.length > 0) && (
                 <button
@@ -842,6 +909,11 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                 style={{ cursor: parallelZoomA > 1 ? (isDraggingParallelA ? 'grabbing' : 'grab') : 'default' }}
                 onWheel={(e) => {
                   e.preventDefault();
+                  // Ctrl+ホイール = ズームイン/アウト
+                  if (e.ctrlKey) {
+                    zoomParallel('A', e.deltaY < 0 ? 1.25 : 1 / 1.25);
+                    return;
+                  }
                   // 非同期モードでアクティブパネルでない場合は無視
                   if (!parallelSyncMode && parallelActivePanel !== 'A') return;
                   if (e.deltaY > 0) {
@@ -929,7 +1001,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                       draggable={false}
                       style={{ transform: `scale(${parallelZoomA}) translate(${parallelPanA.x / parallelZoomA}px, ${parallelPanA.y / parallelZoomA}px)`, transformOrigin: 'center center' }}
                     />
-                    {!isFullscreen && !parallelSyncMode && parallelZoomA !== 1 && (
+                    {!isFullscreen && parallelZoomA !== 1 && (
                       <div className="absolute top-2 left-2 px-2 py-1 bg-black/60 text-white text-xs rounded">
                         {Math.round(parallelZoomA * 100)}% (Ctrl+0でリセット)
                       </div>
@@ -1044,6 +1116,11 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                 style={{ cursor: parallelZoomB > 1 ? (isDraggingParallelB ? 'grabbing' : 'grab') : 'default' }}
                 onWheel={(e) => {
                   e.preventDefault();
+                  // Ctrl+ホイール = ズームイン/アウト
+                  if (e.ctrlKey) {
+                    zoomParallel('B', e.deltaY < 0 ? 1.25 : 1 / 1.25);
+                    return;
+                  }
                   // 非同期モードでアクティブパネルでない場合は無視
                   if (!parallelSyncMode && parallelActivePanel !== 'B') return;
                   if (e.deltaY > 0) {
@@ -1131,7 +1208,7 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                       draggable={false}
                       style={{ transform: `scale(${parallelZoomB}) translate(${parallelPanB.x / parallelZoomB}px, ${parallelPanB.y / parallelZoomB}px)`, transformOrigin: 'center center' }}
                     />
-                    {!isFullscreen && !parallelSyncMode && parallelZoomB !== 1 && (
+                    {!isFullscreen && parallelZoomB !== 1 && (
                       <div className="absolute top-2 left-2 px-2 py-1 bg-black/60 text-white text-xs rounded">
                         {Math.round(parallelZoomB * 100)}% (Ctrl+0でリセット)
                       </div>
@@ -1232,6 +1309,8 @@ const ParallelViewer: React.FC<ParallelViewerProps> = (props) => {
                   <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">C</span><span>指示エディタを開く</span></div>
                   <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">P</span><span>Photoshopで開く</span></div>
                   <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">Q</span><span>MojiQで開く（PDF）</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">Ctrl+ホイール</span><span>ズームイン/アウト</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">Ctrl + / - / 0</span><span>ズーム / 等倍に戻す</span></div>
                   <div className="flex justify-between gap-4"><span className="text-neutral-500 font-mono text-xs">V</span><span>モード切り替え</span></div>
                 </div>
               </div>

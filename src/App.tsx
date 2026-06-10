@@ -1140,8 +1140,11 @@ export default function MangaDiffDetector() {
     if (!isDraggingParallelA) return;
     const dx = e.clientX - parallelDragStartRefA.current.x;
     const dy = e.clientY - parallelDragStartRefA.current.y;
-    setParallelPanA({ x: parallelDragStartRefA.current.panX + dx, y: parallelDragStartRefA.current.panY + dy });
-  }, [isDraggingParallelA]);
+    const newPan = { x: parallelDragStartRefA.current.panX + dx, y: parallelDragStartRefA.current.panY + dy };
+    setParallelPanA(newPan);
+    // 同期モードでは両パネルを一緒に移動
+    if (parallelSyncMode) setParallelPanB(newPan);
+  }, [isDraggingParallelA, parallelSyncMode]);
 
   const handleParallelMouseUpA = useCallback(() => {
     setIsDraggingParallelA(false);
@@ -1159,8 +1162,11 @@ export default function MangaDiffDetector() {
     if (!isDraggingParallelB) return;
     const dx = e.clientX - parallelDragStartRefB.current.x;
     const dy = e.clientY - parallelDragStartRefB.current.y;
-    setParallelPanB({ x: parallelDragStartRefB.current.panX + dx, y: parallelDragStartRefB.current.panY + dy });
-  }, [isDraggingParallelB]);
+    const newPan = { x: parallelDragStartRefB.current.panX + dx, y: parallelDragStartRefB.current.panY + dy };
+    setParallelPanB(newPan);
+    // 同期モードでは両パネルを一緒に移動
+    if (parallelSyncMode) setParallelPanA(newPan);
+  }, [isDraggingParallelB, parallelSyncMode]);
 
   const handleParallelMouseUpB = useCallback(() => {
     setIsDraggingParallelB(false);
@@ -1388,6 +1394,17 @@ export default function MangaDiffDetector() {
       if (item) item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
   }, [parallelIndexA, parallelIndexB, parallelSyncMode, parallelActivePanel]);
+
+  // 非同期 → 同期 に戻したとき、各パネルで個別に拡大/移動した状態をリセットして
+  // クリーンな同期表示に戻す（非同期でズームしたまま同期に戻ると片側だけ拡大されたままになるバグの修正）
+  useEffect(() => {
+    if (parallelSyncMode) {
+      setParallelZoomA(1);
+      setParallelZoomB(1);
+      setParallelPanA({ x: 0, y: 0 });
+      setParallelPanB({ x: 0, y: 0 });
+    }
+  }, [parallelSyncMode]);
 
   // ペア処理
   const processPair = useCallback(async (
@@ -4057,33 +4074,28 @@ export default function MangaDiffDetector() {
           }
           return;
         }
-        // Ctrl+/-/0/;: 非同期モードでのズーム操作
-        if (e.ctrlKey && !parallelSyncMode) {
+        // Ctrl+/-/0/;: ズーム操作（同期モード=両パネル / 非同期モード=アクティブパネル）
+        if (e.ctrlKey) {
+          const zoomInBoth = () => { setParallelZoomA(z => Math.min(5, z * 1.25)); setParallelZoomB(z => Math.min(5, z * 1.25)); };
+          const zoomOutBoth = () => { setParallelZoomA(z => Math.max(0.1, z / 1.25)); setParallelZoomB(z => Math.max(0.1, z / 1.25)); };
+          const resetBoth = () => { setParallelZoomA(1); setParallelZoomB(1); setParallelPanA({ x: 0, y: 0 }); setParallelPanB({ x: 0, y: 0 }); };
           if (e.code === 'Equal' || e.code === 'NumpadAdd' || e.code === 'Semicolon' || e.key === ';') {
             e.preventDefault();
-            if (parallelActivePanel === 'A') {
-              setParallelZoomA(z => Math.min(5, z * 1.25));
-            } else {
-              setParallelZoomB(z => Math.min(5, z * 1.25));
-            }
+            if (parallelSyncMode) zoomInBoth();
+            else if (parallelActivePanel === 'A') setParallelZoomA(z => Math.min(5, z * 1.25));
+            else setParallelZoomB(z => Math.min(5, z * 1.25));
             return;
           } else if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
             e.preventDefault();
-            if (parallelActivePanel === 'A') {
-              setParallelZoomA(z => Math.max(0.1, z / 1.25));
-            } else {
-              setParallelZoomB(z => Math.max(0.1, z / 1.25));
-            }
+            if (parallelSyncMode) zoomOutBoth();
+            else if (parallelActivePanel === 'A') setParallelZoomA(z => Math.max(0.1, z / 1.25));
+            else setParallelZoomB(z => Math.max(0.1, z / 1.25));
             return;
           } else if (e.code === 'Digit0' || e.code === 'Numpad0') {
             e.preventDefault();
-            if (parallelActivePanel === 'A') {
-              setParallelZoomA(1);
-              setParallelPanA({ x: 0, y: 0 });
-            } else {
-              setParallelZoomB(1);
-              setParallelPanB({ x: 0, y: 0 });
-            }
+            if (parallelSyncMode) resetBoth();
+            else if (parallelActivePanel === 'A') { setParallelZoomA(1); setParallelPanA({ x: 0, y: 0 }); }
+            else { setParallelZoomB(1); setParallelPanB({ x: 0, y: 0 }); }
             return;
           }
         }
