@@ -6,8 +6,8 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { readFile as tauriReadFile, readDir } from '@tauri-apps/plugin-fs';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { ask } from '@tauri-apps/plugin-dialog';
-import { check } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
+// 脱github: 自動更新は G:更新置き場 を minisign 検証する Rust コマンド(check_local_update/apply_local_update)を使う
+type LocalUpdateInfo = { version: string; file_name: string; setup_path: string };
 import GDriveFolderBrowser from './components/GDriveFolderBrowser';
 import ScreenshotEditor from './components/ScreenshotEditor';
 import Header from './components/Header';
@@ -204,7 +204,7 @@ export default function MangaDiffDetector() {
     | { type: 'error'; message: string }
     | null
   >(null);
-  const pendingUpdateRef = useRef<Awaited<ReturnType<typeof check>> | null>(null);
+  const pendingUpdateRef = useRef<LocalUpdateInfo | null>(null);
 
   const processingRef = useRef(false);
   const compareModeRef = useRef(compareMode); // モード変更を追跡
@@ -292,13 +292,13 @@ export default function MangaDiffDetector() {
   useEffect(() => {
     const timer = setTimeout(async () => {
       try {
-        const update = await check();
+        const update = await invoke<LocalUpdateInfo | null>('check_local_update');
         if (update) {
           pendingUpdateRef.current = update;
           setUpdateDialogState({
             type: 'confirm',
             version: update.version,
-            notes: update.body || undefined
+            notes: undefined
           });
         }
       } catch (e) {
@@ -435,11 +435,9 @@ export default function MangaDiffDetector() {
     if (!pendingUpdateRef.current) return;
     setUpdateDialogState({ type: 'downloading' });
     try {
-      await pendingUpdateRef.current.downloadAndInstall();
+      // 脱github: G:更新置き場のsetup.exeを再検証→サイレント更新(/S /R /UPDATE)→アプリ自動終了・再起動
       setUpdateDialogState({ type: 'complete' });
-      setTimeout(async () => {
-        await relaunch();
-      }, 1500);
+      await invoke('apply_local_update', { setupPath: pendingUpdateRef.current.setup_path });
     } catch (e) {
       console.error('Update failed:', e);
       setUpdateDialogState({ type: 'error', message: String(e) });

@@ -2208,11 +2208,12 @@ dependencies = [
 
 [[package]]
 name = "kenban"
-version = "2.3.2"
+version = "2.3.4"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
  "image",
+ "minisign-verify",
  "natord",
  "open",
  "pdfium-render",
@@ -2220,6 +2221,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

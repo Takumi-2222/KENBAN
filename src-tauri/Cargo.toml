@@ -1,6 +1,6 @@
 [package]
 name = "kenban"
-version = "2.3.2"
+version = "2.3.3"
 description = "KENBAN - Visual Diff Checker"
 authors = ["you"]
 edition = "2021"
@@ -16,6 +16,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+sha2 = "0.10"
 
 [dependencies]
 tauri = { version = "2.10", features = ["protocol-asset"] }
@@ -34,6 +35,8 @@ dirs = "5"
 natord = "1.0"
 rayon = "1.10"
 pdfium-render = "0.8"
+sha2 = "0.10"
+minisign-verify = "0.2"
 
 [profile.dev]
 opt-level = 2

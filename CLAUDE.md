@@ -289,3 +289,18 @@ A/B 各パネルの右下 (`absolute bottom-6 right-2`) に、`Eye` トグル + 
 - App.tsx が巨大なので編集時は行番号を確認すること
 - `processingRef` → `processingCountRef` 等のリファクタリング時は参照箇所を全検索
 - ファイルの `filePath` プロパティ (FileWithPath) はTauri経由のドロップ時のみ設定される
+
+---
+
+## 最新状態（2026-06-15: セキュリティ強化＋自動更新の脱GitHub・App_installer統一）
+
+### セキュリティ強化
+- `build.rs` が同梱 pdfium.dll の SHA-256 を exe に焼き込み（fail-closed）→ `integrity.rs` `verify_pdfium` でロード前にハッシュ照合。**システム pdfium へのフォールバックは削除**（DLL検索順ハイジャック対策）。pdfium.dll を差し替えたら再ビルド必須。
+- CSP 厳格化（connect-src から `https:` 除去）、`dlog!`、temp ACL 強化、jspdf 4.2.1。
+
+### 自動更新（脱GitHub・minisign・App_installer）
+- 実行時 GitHub 非接続。**`G:\…\DTP制作部\App_installer\KENBAN\`** を minisign 検証して適用（`updater_local.rs`、検証鍵 `_署名鍵\KENBAN\`）。App.tsx は plugin-updater を撤去し `check_local_update`/`apply_local_update` へ移行。
+- updater 読取は `std::fs::canonicalize`（許可リスト非経由）。`JSON_FOLDER_BASE_PATH` 等の業務パスは現行(編集企画_C班…DTP制作部)で一致。
+
+### 2段階移行
+- 現フリート(v2.3.2)→ GitHub に **vMig=2.3.3** を元鍵CIリリースで移行→以後 `App_installer\KENBAN\`。その後 **vG=2.3.4** を配置。詳細: 運用フォルダ `_更新方法とリリース手順.md`。

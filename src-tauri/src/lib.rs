@@ -1,3 +1,15 @@
+mod integrity;
+mod updater_local;
+
+/// デバッグ専用ログ。release では出力しない（本番でのパス露出防止）。起動診断 [integrity] は eprintln 維持。
+#[macro_export]
+macro_rules! dlog {
+    ($($arg:tt)*) => {{
+        #[cfg(debug_assertions)] eprintln!($($arg)*);
+        #[cfg(not(debug_assertions))] { let _ = format_args!($($arg)*); }
+    }};
+}
+
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba, RgbaImage};
@@ -366,7 +378,35 @@ fn get_kenban_temp_dir() -> Result<PathBuf, String> {
     if !temp.exists() {
         fs::create_dir_all(&temp).map_err(|e| format!("Failed to create temp dir: {}", e))?;
     }
+    harden_temp_dir(&temp);
     Ok(temp)
+}
+
+/// 一時フォルダを現ユーザ＋SYSTEM のみの ACL に絞る（初回1回・best-effort）。
+/// 他ユーザーによる temp 覗き見/先回り作成(squatting)を軽減（手順書 04_/12_）。
+fn harden_temp_dir(dir: &std::path::Path) {
+    use std::sync::OnceLock;
+    static DONE: OnceLock<()> = OnceLock::new();
+    let _ = DONE.get_or_init(|| {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            if let Ok(user) = std::env::var("USERNAME") {
+                let _ = std::process::Command::new("icacls")
+                    .arg(dir)
+                    .args([
+                        "/inheritance:r",
+                        "/grant:r",
+                        &format!("{}:(OI)(CI)F", user),
+                        "/grant:r",
+                        "SYSTEM:(OI)(CI)F",
+                    ])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output();
+            }
+        }
+    });
 }
 
 /// DynamicImage を JPEG 85% で temp ファイルに書き出し、パスを返す
@@ -2691,8 +2731,12 @@ fn get_pdfium() -> Result<Pdfium, String> {
         .ok_or_else(|| "Failed to get exe directory".to_string())?
         .to_path_buf();
 
+    // ★ 改ざん検知: bind 前に同梱 pdfium.dll のハッシュを検証（差し替えDLLのロードを拒否）。
+    //   システムライブラリへのフォールバックは DLL 検索順ハイジャックの恐れがあるため使わない。
+    let dll_path = exe_dir.join("pdfium.dll");
+    crate::integrity::verify_pdfium(&dll_path)?;
+
     let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&exe_dir))
-        .or_else(|_| Pdfium::bind_to_system_library())
         .map_err(|e| {
             format!(
                 "Failed to load PDFium library: {}. Place pdfium.dll next to the executable.",
@@ -3724,7 +3768,9 @@ pub fn run() {
             cleanup_preview_cache,
             pick_files,
             pick_folder,
-            pick_save_file
+            pick_save_file,
+            updater_local::check_local_update,
+            updater_local::apply_local_update
         ])
         .setup(|app| {
             let handle = app.handle().clone();
